@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Jordan Dudgeon – Business Card</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Georgia', serif;
+      background: #fdf6e3;
+      transition: background 0.5s;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    main { flex: 1; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); box-shadow: 0 8px 16px rgba(0,0,0,0.25); }
+      50% { transform: translateY(-5px); box-shadow: 0 12px 24px rgba(0,0,0,0.35); }
+    }
+
+    /* Mobile-first card */
+    .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      border-radius: 8px;
+      padding: 20px;
+      width: 90%;
+      max-width: 500px;
+      margin: 40px auto;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.25);
+      animation: float 3s ease-in-out infinite;
+    }
+
+    .profile-pic img {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      border: 3px solid #8b5e3c;
+      margin-bottom: 20px;
+    }
+
+    .divider { display: none; }
+
+    .info { text-align: center; }
+    .info h1 { margin: 0; font-size: 1.6em; color: #4b2e2e; text-transform: uppercase; }
+    .info h2 { margin: 5px 0; font-size: 1.1em; color: #6b4226; font-family: 'Courier New', monospace; }
+    .info p { font-size: 0.95em; margin: 15px 0; color: #3e2c1c; }
+
+    .info a, .info button {
+      display: inline-block;
+      margin: 5px 10px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: 'Georgia', serif;
+      background: #6b4226;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .info a:hover, .info button:hover { background: #4b2e2e; }
+
+    .toggle-btn {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 8px 12px;
+      font-weight: bold;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      background: #6b4226;
+      color: #fff;
+    }
+
+    /* Shared section styling */
+    .projects, .contact {
+      width: 90%;
+      max-width: 800px;
+      margin: 20px auto;
+      padding: 20px;
+      border-radius: 8px;
+      background: #fff8dc;
+      border: 3px solid #8b5e3c;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.25);
+
+      opacity: 0;
+      max-height: 0;
+      overflow: hidden;
+      transition: opacity 0.8s ease, max-height 0.8s ease;
+    }
+    .projects.show, .contact.show {
+      opacity: 1;
+      max-height: 1000px;
+    }
+
+    .projects h2, .contact h2 {
+      text-align: center;
+      font-size: 1.5em;
+      margin-bottom: 20px;
+      color: #4b2e2e;
+      text-transform: uppercase;
+    }
+
+    .project-item {
+      margin-bottom: 20px;
+      padding: 15px;
+      border-bottom: 1px dashed #8b5e3c;
+    }
+    .project-item:last-child { border-bottom: none; }
+    .project-item h3 { margin: 0; font-size: 1.2em; color: #6b4226; }
+    .project-item p { margin: 5px 0 0; font-size: 0.95em; color: #3e2c1c; }
+
+    /* Contact content specifics */
+    .contact p { margin: 8px 0; color: #3e2c1c; }
+    .contact .contact-row { display: flex; gap: 10px; align-items: center; }
+
+    /* Footer */
+    footer {
+  padding: 15px;
+  font-size: 0.9em;
+  background: #6b4226;
+  color: #fff;
+}
+
+footer .footer-content {
+  display: flex;
+  align-items: center;
+  justify-content: center; /* keeps text centered */
+  gap: 20px;
+}
+
+footer .toggle-btn {
+  position: static;   /* remove fixed positioning */
+  margin-right: auto; /* push it to the left */
+  background: #fff;
+  color: #6b4226;
+  font-weight: bold;
+}
+
+
+    /* Desktop layout */
+    @media (min-width: 700px) {
+      .card {
+        flex-direction: row;
+        align-items: flex-start;
+        text-align: left;
+        max-width: 900px;
+      }
+      .profile-pic { margin-right: 20px; }
+      .divider {
+        display: block;
+        width: 2px;
+        background-color: currentColor;
+        margin-right: 20px;
+        align-self: stretch;
+      }
+      .info { flex: 1; text-align: left; }
+    }
+
+    /* Dungeon Theme */
+    body.dungeon { background: #1a1a1a; }
+    .dungeon .card { background: #2b1b1b; border: 3px solid #6b0f1a; }
+    .dungeon .profile-pic img { border-color: #6b0f1a; }
+    .dungeon .info h1 { color: #f0e6f6; font-family: 'Cinzel', serif; }
+    .dungeon .info h2 { color: #ffb3c6; }
+    .dungeon .info p { color: #e0d0e6; }
+    .dungeon .info a, .dungeon .info button { background: #6b0f1a; color: #f0e6f6; }
+    .dungeon .info a:hover, .dungeon .info button:hover { background: #a3152c; }
+    .dungeon .toggle-btn { background: #6b0f1a; color: #f0e6f6; }
+    .dungeon .projects, .dungeon .contact { background: #2b1b1b; border: 3px solid #6b0f1a; }
+    .dungeon .projects h2, .dungeon .contact h2 { color: #f0e6f6; }
+    .dungeon .project-item h3 { color: #ffb3c6; }
+    .dungeon .project-item p { color: #e0d0e6; }
+    .dungeon footer { background: #6b0f1a; color: #f0e6f6; }
+    /* Seasonal Theme */
+body.seasonal {
+  background: linear-gradient(to bottom, #fff3e0, #ffe0b2); /* warm gradient */
+}
+
+.seasonal .card {
+  background: #fffaf0;
+  border: 3px solid #d2691e;
+}
+
+.seasonal .profile-pic img {
+  border-color: #d2691e;
+}
+
+.seasonal .info h1 {
+  color: #8b4513;
+  font-family: 'Papyrus', serif;
+}
+
+.seasonal .info h2 {
+  color: #ff6347;
+}
+
+.seasonal .info p {
+  color: #5c4033;
+}
+
+.seasonal .info a, .seasonal .info button {
+  background: #d2691e;
+  color: #fffaf0;
+}
+.seasonal .info a:hover, .seasonal .info button:hover {
+  background: #a0522d;
+}
+
+.seasonal .toggle-btn {
+  background: #d2691e;
+  color: #fffaf0;
+}
+
+.seasonal .projects, .seasonal .contact {
+  background: #fffaf0;
+  border: 3px solid #d2691e;
+}
+
+.seasonal .projects h2, .seasonal .contact h2 {
+  color: #8b4513;
+}
+
+.seasonal .project-item h3 {
+  color: #ff6347;
+}
+
+.seasonal .project-item p, .seasonal .contact p {
+  color: #5c4033;
+}
+
+.seasonal footer {
+  background: #d2691e;
+  color: #fffaf0;
+}
+
+  </style>
+</head>
+<body class="bookish">
+  <main>
+    <!-- Business Card -->
+    <div class="card">
+      <div class="profile-pic">
+        <img src="https://via.placeholder.com/120" alt="Jordan Dudgeon Profile Picture" />
+      </div>
+      <div class="divider"></div>
+      <div class="info">
+        <h1>Jordan Dudgeon</h1>
+        <h2>Business Administration</h2>
+        <p>Experienced customer service and inventory specialist with a background in logistics, sales, and software support. Passionate about teamwork, adaptability, and continuous growth in dynamic environments.</p>
+
+        <!-- Menu -->
+        <a href="https://www.linkedin.com/in/jordan-dudgeon" target="_blank">LinkedIn</a>
+        <button onclick="toggleProjects()">Projects</button>
+        <button onclick="toggleContact()">Contact Me</button>
+      </div>
+    </div>
+
+    <!-- Projects Section -->
+    <div class="projects" id="projects">
+      <h2>Projects</h2>
+      <div class="project-item">
+        <h3>Business Card Website</h3>
+        <p>A personal branding site with bookish and dungeon themes, responsive design, and animated effects.</p>
+      </div>
+      <div class="project-item">
+        <h3>Organizational Strategy Study</h3>
+        <p>Research project connecting theory to practice in business administration, focused on adaptability and teamwork.</p>
+      </div>
+      <div class="project-item">
+        <h3>Vintage Web Design Portfolio</h3>
+        <p>Collection of creative layouts inspired by bookplates and classic aesthetics, blending authenticity with modern code.</p>
+      </div>
+    </div>
+
+    <!-- Contact Section -->
+    <div class="contact" id="contact">
+      <h2>Contact Me</h2>
+      <p>You can reach me directly at:</p>
+      <p><strong>Email:</strong> jdudgeon1993@gmail.com</p>
+      <p><strong>Phone:</strong> 720.220.9553</p>
+      <div class="contact-row">
+        <a href="https://www.linkedin.com/in/jordan-dudgeon" target="_blank">LinkedIn</a>
+        <a href="mailto:jdudgeon1993@gmail.com">Send an email</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+<footer>
+  <div class="footer-content">
+    <button class="toggle-btn" onclick="toggleTheme()">Switch Theme</button>
+    <p>Created by <span>Jordan Dudgeon</span> · Engineered by <span>Microsoft Copilot</span> · Presented by <span>Authentica Creative Studios</span></p>
+  </div>
+</footer>
+
+
+  <script>
+      function toggleTheme() {
+    const body = document.body;
+    if (body.classList.contains('bookish')) {
+      body.classList.remove('bookish');
+      body.classList.add('dungeon');
+    } else if (body.classList.contains('dungeon')) {
+      body.classList.remove('dungeon');
+      body.classList.add('seasonal');
+    } else {
+      body.classList.remove('seasonal');
+      body.classList.add('bookish');
+    }
+  }
+
+  function toggleProjects() {
+    const section = document.getElementById('projects');
+    section.classList.toggle('show');
+    if (section.classList.contains('show')) {
+      section.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
+  function toggleContact() {
+    const section = document.getElementById('contact');
+    section.classList.toggle('show');
+    if (section.classList.contains('show')) {
+      section.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
+
+    function toggleProjects() {
+      const section = document.getElementById('projects');
+      section.classList.toggle('show');
+      if (section.classList.contains('show')) {
+        section.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+
+    function toggleContact() {
+      const section = document.getElementById('contact');
+      section.classList.toggle('show');
+      if (section.classList.contains('show')) {
+        section.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+  </script>
+</body>
+</html>
