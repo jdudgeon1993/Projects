@@ -365,7 +365,7 @@
 
 
     /* ---------------------------------- */
-    /* THEME STYLING OVERRIDES (Includes all previous color settings) */
+    /* THEME STYLING OVERRIDES */
     /* ---------------------------------- */
 
     /* Dungeon Theme Nav */
@@ -473,16 +473,16 @@
     <div class="projects" id="projects" role="region" aria-labelledby="projects-heading">
       <h2 id="projects-heading">Projects</h2>
       <div class="project-item" onclick="openProjectGallery(0)">
-        <h3>Business Card Website (This Site!)</h3>
-        <p>A personal branding site with bookish, dungeon, and seasonal themes, responsive design, and dynamic animated effects. Built with vanilla HTML/CSS/JS.</p>
+        <h3>Dynamic Themed Portfolio</h3>
+        <p>A personal branding site with dynamic design, three aesthetic themes, and smooth content transitions.</p>
       </div>
       <div class="project-item" onclick="openProjectGallery(1)">
-        <h3>Organizational Strategy Study</h3>
-        <p>Research project connecting theory to practice in business administration, focused on adaptability and teamwork and presented to leadership.</p>
+        <h3>Inter-Departmental Project Analysis</h3>
+        <p>A comprehensive analysis for an internal stakeholder, focused on system integration and workflow optimization.</p>
       </div>
       <div class="project-item" onclick="openProjectGallery(2)">
-        <h3>Inventory Management System Design</h3>
-        <p>Designed a functional relational database and user interface mockups for a streamlined retail inventory and logistics tracking system.</p>
+        <h3>Future Systems Initiatives</h3>
+        <p>Seeking roles focused on system implementation, process optimization, and operational efficiency.</p>
       </div>
     </div>
     
@@ -508,7 +508,8 @@
           
           <button class="nav-btn left-btn" onclick="navigateProjects(-1)" aria-label="Previous Project">&lt;</button>
           
-          <div class="project-details fade-out"> <div class="project-media-container">
+          <div class="project-details fade-out"> 
+              <div class="project-media-container">
               </div>
               <h2 id="project-title"></h2>
               <p id="project-description"></p>
@@ -528,26 +529,26 @@
 
   <script>
     // ----------------------------------
-    // PROJECT DATA ARRAY 
+    // PROJECT DATA ARRAY (All three projects finalized)
     // ----------------------------------
     const projectsData = [
         { 
-            title: "Business Card Website (This Site!)", 
-            description: "A personal branding site with bookish, dungeon, and seasonal themes, responsive design, and dynamic animated effects. Built with vanilla HTML/CSS/JS.",
-            link: "https://github.com/yourusername/portfolio-code-link",
-            mediaUrl: "https://via.placeholder.com/600x400/8b5e3c/ffffff?text=Website+Screenshot" 
+            title: "Dynamic Themed Portfolio", 
+            description: "Designed and developed a responsive, single-page professional portfolio using vanilla HTML, CSS, and JavaScript. Key features include a floating 'business card' layout, three distinct CSS-driven aesthetic themes (Bookish, Dungeon, Seasonal), and smooth content transitions, showcasing proficiency in front-end development and thematic design.",
+            link: "https://github.com/jdudgeon1993/Projects.git", 
+            mediaUrl: "https://via.placeholder.com/600x400/8b5e3c/ffffff?text=Portfolio+Live+View" 
         },
         { 
-            title: "Organizational Strategy Study", 
-            description: "Research project connecting theory to practice in business administration, focused on adaptability, teamwork, and presented to senior leadership.",
-            link: "https://dropbox.com/your-strategy-doc-link",
-            mediaUrl: "https://via.placeholder.com/600x400/6b4226/ffffff?text=Strategy+Document" 
+            title: "Inter-Departmental Project Analysis", 
+            description: "Executed a comprehensive analysis for an internal stakeholder, providing actionable recommendations on system integration, workflow optimization, and team resource allocation. This project showcases strong research, problem-solving, and professional communication skills used to drive measurable operational improvements.",
+            link: "https://github.com/jdudgeon1993/Projects/blob/28454ac426544536ed555853b532563bf96f52a3/Heathers%20Project", 
+            mediaUrl: "https://via.placeholder.com/600x400/6b4226/ffffff?text=Project+Report+Analysis" 
         },
         { 
-            title: "Inventory Management System Design", 
-            description: "Designed a functional relational database and user interface mockups for a streamlined retail inventory and logistics tracking system, focusing on user efficiency.",
-            link: "https://figma.com/your-mockup-link",
-            mediaUrl: "https://via.placeholder.com/600x400/4b2e2e/ffffff?text=Mockup+Image" 
+            title: "Future Systems Initiatives", 
+            description: "Dedicated to continuous skill application in the Business Systems space. Currently seeking roles focused on system implementation, process optimization, and operational efficiency. Ready to apply expertise in logistics, data analysis, and technical problem-solving to new challenges.",
+            link: "https://www.linkedin.com/in/jordan-dudgeon", 
+            mediaUrl: "https://via.placeholder.com/600x400/4b2e2e/ffffff?text=Ready+For+Next+Role" 
         }
     ];
 
@@ -711,6 +712,32 @@
         modal.classList.add('show');
         document.body.style.overflow = 'hidden';
     }
+
+    // ----------------------------------
+    // A11Y: Keyboard Event Listener (NEW!)
+    // ----------------------------------
+    document.addEventListener('keydown', function(event) {
+        const projectModal = document.getElementById('projectModal');
+        const contactModal = document.getElementById('contactModal');
+
+        // 1. Escape Key: Closes any open modal
+        if (event.key === 'Escape') {
+            if (projectModal.classList.contains('show')) {
+                closeModal('projectModal');
+            } else if (contactModal.classList.contains('show')) {
+                closeModal('contactModal');
+            }
+        }
+
+        // 2. Arrow Keys: Navigates projects only if projectModal is open
+        if (projectModal.classList.contains('show')) {
+            if (event.key === 'ArrowRight') {
+                navigateProjects(1);
+            } else if (event.key === 'ArrowLeft') {
+                navigateProjects(-1);
+            }
+        }
+    });
 
   </script>
 </body>
