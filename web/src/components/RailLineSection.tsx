@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useRailLine } from '../lib/useRailLine';
-import { getRailLines, getNearestRoutes, getRoutesServingStop, routeTypeLabel, type RailLineOption, type NearbyRoute, type RouteAtStop } from '../lib/schedule';
+import { getRailLines, getNearestRoutes, getRoutesServingStop, getNextScheduledDepartures, routeTypeLabel, type RailLineOption, type NearbyRoute, type RouteAtStop, type ScheduledArrival } from '../lib/schedule';
 import { getArrivalsForStop, getActiveAlerts, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
 import { getDrivingRoute, type DrivingRoute } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
@@ -359,6 +359,19 @@ export default function RailLineSection() {
       cancelled = true;
     };
   }, [selectedStop?.stopId]);
+
+  const [stopScheduled, setStopScheduled] = useState<Map<string, ScheduledArrival[]> | null>(null);
+  useEffect(() => {
+    if (!selectedStop || !stopRoutes || stopRoutes.length === 0) { setStopScheduled(null); return; }
+    let cancelled = false;
+    setStopScheduled(null);
+    const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+    getNextScheduledDepartures(selectedStop.stopId, stopRoutes.map((r) => r.shortName), nowMins).then((result) => {
+      if (!cancelled) setStopScheduled(result);
+    });
+    return () => { cancelled = true; };
+  }, [selectedStop?.stopId, stopRoutes]);
+
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -1064,44 +1077,93 @@ export default function RailLineSection() {
                             </div>
                           )}
 
-                          {/* Other routes at this stop */}
+                          {/* Connecting routes at this stop */}
                           {(stopRoutes === null || stopRoutes.length > 0) && (
                             <div className="border-t border-slate-800 pt-2">
-                              <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Also stops here</p>
+                              <p className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">Connections at this stop</p>
                               {stopRoutes === null ? (
                                 <p className="text-xs text-slate-500">Loading…</p>
                               ) : (
-                                <div className="space-y-1.5">
+                                <div className="space-y-3">
                                   {stopRoutes.map((r) => {
-                                    const liveArrivals = getArrivalsForStop(tripUpdates, selectedStop!.stopId).filter((a) => a.routeId === r.routeId);
+                                    const allLive = getArrivalsForStop(tripUpdates, selectedStop!.stopId)
+                                      .filter((a) => a.routeId === r.routeId)
+                                      .slice(0, 3);
+                                    const scheduled = stopScheduled?.get(r.shortName) ?? [];
+                                    // Show scheduled times only for arrivals not already covered by live
+                                    const scheduledToShow = allLive.length < 2 ? scheduled : [];
+
                                     return (
-                                      <div key={r.shortName} className="flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            selectLine(r.shortName);
-                                            setSelectedStop(null);
-                                          }}
-                                          title={`Switch to ${r.longName}`}
-                                          className="flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-bold text-slate-950 hover:opacity-80"
-                                          style={{ backgroundColor: r.color ?? '#38bdf8' }}
-                                        >
-                                          {r.shortName}
-                                        </button>
-                                        <span className="min-w-0 flex-1 truncate text-xs text-slate-400">{r.longName}</span>
-                                        <span className="shrink-0 text-xs">
-                                          {liveArrivals.length > 0 ? (
-                                            <span className="text-sky-400">
-                                              {liveArrivals.slice(0, 2).map((a) => {
-                                                const d = a.time - nowSec;
-                                                return d <= 60 ? `${Math.ceil(d)}s` : `${Math.round(d/60)} min`;
-                                              }).join(', ')}
-                                            </span>
-                                          ) : (
-                                            <span className="text-slate-600">no live data</span>
-                                          )}
-                                        </span>
+                                      <div key={r.shortName} className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5">
+                                        {/* Route header row */}
+                                        <div className="mb-2 flex items-center gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              selectLine(r.shortName);
+                                              setSelectedStop(null);
+                                            }}
+                                            title={`Switch to ${r.longName}`}
+                                            className="flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-bold text-slate-950 hover:opacity-80"
+                                            style={{ backgroundColor: r.color ?? '#38bdf8' }}
+                                          >
+                                            {r.shortName}
+                                          </button>
+                                          <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-300">{r.longName}</span>
+                                          <span className="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${r.color ?? '#38bdf8'}22`, color: r.color ?? '#38bdf8' }}>
+                                            {routeTypeLabel(r.routeType)}
+                                          </span>
+                                        </div>
+
+                                        {/* Arrival rows */}
+                                        {allLive.length === 0 && scheduledToShow.length === 0 && stopScheduled === null && (
+                                          <p className="text-xs text-slate-600">Loading schedule…</p>
+                                        )}
+                                        {allLive.length === 0 && scheduledToShow.length === 0 && stopScheduled !== null && (
+                                          <p className="text-xs text-slate-600">No upcoming departures found</p>
+                                        )}
+
+                                        <div className="space-y-1">
+                                          {allLive.map((a) => {
+                                            const d = a.time - nowSec;
+                                            let countText: string;
+                                            let countClass: string;
+                                            if (d <= 0) { countText = 'Departed'; countClass = 'text-slate-500'; }
+                                            else if (d <= 7) { countText = 'Arriving'; countClass = 'text-red-400 animate-pulse'; }
+                                            else if (d <= 30) { countText = 'Arriving soon'; countClass = 'text-red-400 animate-pulse'; }
+                                            else if (d <= 60) { countText = `:${String(Math.ceil(d)).padStart(2, '0')}`; countClass = 'text-red-400'; }
+                                            else if (d <= 180) { countText = `${Math.ceil(d / 60)} min`; countClass = 'text-yellow-400'; }
+                                            else if (d <= 300) { countText = `${Math.ceil(d / 60)} min`; countClass = 'text-yellow-400'; }
+                                            else { countText = `${Math.round(d / 60)} min`; countClass = 'text-sky-400'; }
+                                            return (
+                                              <div key={a.tripId} className="flex items-center justify-between text-xs">
+                                                <div className="flex items-center gap-1.5">
+                                                  <span className="text-slate-400">{formatClockTime(a.time)}</span>
+                                                  {a.delaySeconds != null && Math.abs(a.delaySeconds) >= 60 && (
+                                                    <span className={a.delaySeconds > 0 ? 'text-yellow-500' : 'text-emerald-500'}>
+                                                      {a.delaySeconds > 0 ? '+' : ''}{Math.round(a.delaySeconds / 60)} min
+                                                    </span>
+                                                  )}
+                                                  <span className="text-[10px] text-emerald-600">live</span>
+                                                </div>
+                                                <span className={`font-semibold ${countClass}`}>{countText}</span>
+                                              </div>
+                                            );
+                                          })}
+
+                                          {scheduledToShow.map((s, si) => (
+                                            <div key={si} className="flex items-center justify-between text-xs">
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="text-slate-400">{s.timeDisplay}</span>
+                                                <span className="text-[10px] text-slate-600">sched</span>
+                                              </div>
+                                              <span className="text-slate-400">
+                                                {s.timeMinutes - (new Date().getHours() * 60 + new Date().getMinutes())} min
+                                              </span>
+                                            </div>
+                                          ))}
+                                        </div>
                                       </div>
                                     );
                                   })}

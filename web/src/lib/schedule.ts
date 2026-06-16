@@ -448,3 +448,61 @@ export async function getShapePoints(shapeId: string): Promise<ShapePoint[]> {
   }
   return points;
 }
+
+export interface ScheduledArrival {
+  routeShortName: string;
+  directionId: number;
+  timeDisplay: string; // "9:15 PM"
+  timeMinutes: number; // minutes since midnight, for sorting
+}
+
+/**
+ * Next scheduled departures at a stop for a given set of routes.
+ * Used as a fallback when live GTFS-RT data is missing for a connecting route.
+ */
+export async function getNextScheduledDepartures(
+  stopId: string,
+  routeShortNames: string[],
+  nowMinutes: number,
+  countPerRoute = 3,
+): Promise<Map<string, ScheduledArrival[]>> {
+  if (!supabase || routeShortNames.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('rtd_stop_times')
+    .select('departure_time, arrival_time, rtd_trips(direction_id, rtd_routes(route_short_name))')
+    .eq('stop_id', stopId)
+    .limit(2000);
+  if (error || !data) return new Map();
+
+  const nameSet = new Set(routeShortNames);
+  const buckets = new Map<string, ScheduledArrival[]>();
+
+  for (const row of data as any[]) {
+    const shortName = row.rtd_trips?.rtd_routes?.route_short_name;
+    if (!shortName || !nameSet.has(shortName)) continue;
+    const timeStr = row.departure_time ?? row.arrival_time;
+    if (!timeStr) continue;
+    const mins = gtfsTimeToMinutes(timeStr);
+    if (mins == null || mins < nowMinutes) continue;
+
+    const [h, m] = timeStr.split(':').map(Number);
+    const hour24 = h % 24;
+    const period = hour24 < 12 ? 'AM' : 'PM';
+    const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+    const timeDisplay = `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+
+    if (!buckets.has(shortName)) buckets.set(shortName, []);
+    buckets.get(shortName)!.push({
+      routeShortName: shortName,
+      directionId: Number(row.rtd_trips?.direction_id ?? 0),
+      timeDisplay,
+      timeMinutes: mins,
+    });
+  }
+
+  for (const [key, arr] of buckets) {
+    arr.sort((a, b) => a.timeMinutes - b.timeMinutes);
+    buckets.set(key, arr.slice(0, countPerRoute));
+  }
+  return buckets;
+}
