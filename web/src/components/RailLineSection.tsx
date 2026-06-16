@@ -86,50 +86,166 @@ function formatClockTime(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-/** Live mm:ss countdown, falling back to whole minutes once it's far out. */
-function formatCountdown(unixSeconds: number, now: number): string {
-  const totalSeconds = Math.round(unixSeconds - now / 1000);
-  if (totalSeconds <= 0) return 'DUE';
-  if (totalSeconds < 90) return `${totalSeconds}s`;
-  const mins = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  if (mins < 5) return `${mins}m ${secs}s`;
-  return `${mins} min`;
+
+interface PhaseInfo {
+  label: string;
+  sublabel: string | null;
+  dotClass: string;
+  labelClass: string;
+  animate: 'none' | 'pulse' | 'bounce';
+  current: UpcomingArrival | null;
+  upcoming: UpcomingArrival[];
 }
 
-interface CountdownDisplay {
-  text: string;
-  className: string;
-}
+function computeStopPhase(
+  arrivals: UpcomingArrival[],
+  nowSec: number,
+  isTerminal: boolean,
+): PhaseInfo {
+  const dwelling = arrivals.find((a) => {
+    const dep = a.departureTime ?? a.time;
+    return nowSec >= a.time - 5 && nowSec < Math.max(dep, a.time + 15) + 5;
+  });
+  const dwellingDeparted =
+    dwelling != null && nowSec >= Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
 
-/**
- * Walks an arrival forward through its lifecycle:
- * >5min blue countdown -> <=5min yellow -> <=1min red -> <=7s "Arriving" (red, no countdown)
- * -> just passed (<=10s ago) "Departed" (red) -> falls back to the next scheduled arrival.
- */
-function getCountdownDisplay(arrivals: UpcomingArrival[], now: number): { display: CountdownDisplay; current: UpcomingArrival | null; upcoming: UpcomingArrival[] } {
-  const nowSeconds = now / 1000;
-  let currentIndex = arrivals.findIndex((a) => a.time - nowSeconds > -10);
-  if (currentIndex === -1) currentIndex = arrivals.length;
-  const current = arrivals[currentIndex] ?? null;
-  const upcoming = arrivals.slice(currentIndex + 1);
+  const pool = arrivals.filter((a) => a.time - nowSec > -25);
+  const current = pool[0] ?? null;
+  const rest = pool.slice(1);
 
-  if (!current) return { display: { text: '—', className: 'text-slate-700' }, current, upcoming };
+  if (dwelling && !dwellingDeparted) {
+    const dep = dwelling.departureTime ?? dwelling.time;
+    const depIn = Math.round(dep - nowSec);
+    const sublabel = depIn > 5 ? `Departs in ${depIn}s` : 'Departing soon';
+    return {
+      label: isTerminal ? 'At Platform' : 'Arrived',
+      sublabel,
+      dotClass: 'border-amber-400 bg-amber-400',
+      labelClass: 'text-amber-400',
+      animate: 'pulse',
+      current: dwelling,
+      upcoming: rest,
+    };
+  }
 
-  const diff = current.time - nowSeconds;
+  if (dwelling && dwellingDeparted) {
+    const dep = Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
+    const secsSince = nowSec - dep;
+    if (secsSince < 10) {
+      return {
+        label: 'Departing',
+        sublabel: null,
+        dotClass: 'border-amber-500 bg-amber-500/30',
+        labelClass: 'text-amber-400',
+        animate: 'pulse',
+        current: dwelling,
+        upcoming: rest,
+      };
+    }
+    if (secsSince < 25) {
+      return {
+        label: 'Departed',
+        sublabel: null,
+        dotClass: 'border-slate-500 bg-slate-700',
+        labelClass: 'text-slate-500',
+        animate: 'none',
+        current: rest[0] ?? null,
+        upcoming: rest.slice(1),
+      };
+    }
+  }
+
+  if (!current) {
+    return {
+      label: '—',
+      sublabel: null,
+      dotClass: 'border-slate-700 bg-slate-800',
+      labelClass: 'text-slate-700',
+      animate: 'none',
+      current: null,
+      upcoming: [],
+    };
+  }
+
+  const diff = current.time - nowSec;
+
   if (diff <= 0) {
-    return { display: { text: 'Departed', className: 'text-red-400' }, current, upcoming };
+    return {
+      label: 'Departed',
+      sublabel: null,
+      dotClass: 'border-slate-500 bg-slate-700',
+      labelClass: 'text-slate-500',
+      animate: 'none',
+      current: rest[0] ?? null,
+      upcoming: rest.slice(1),
+    };
   }
   if (diff <= 7) {
-    return { display: { text: 'Arriving', className: 'text-red-400' }, current, upcoming };
+    return {
+      label: 'Arriving',
+      sublabel: formatClockTime(current.time),
+      dotClass: 'border-red-400 bg-red-400',
+      labelClass: 'text-red-400',
+      animate: 'pulse',
+      current,
+      upcoming: rest,
+    };
+  }
+  if (diff <= 30) {
+    return {
+      label: 'Arriving soon',
+      sublabel: formatClockTime(current.time),
+      dotClass: 'border-red-400 bg-red-400/40',
+      labelClass: 'text-red-400',
+      animate: 'pulse',
+      current,
+      upcoming: rest,
+    };
   }
   if (diff <= 60) {
-    return { display: { text: formatCountdown(current.time, now), className: 'text-red-400' }, current, upcoming };
+    const secs = Math.ceil(diff);
+    return {
+      label: `:${String(secs).padStart(2, '0')}`,
+      sublabel: formatClockTime(current.time),
+      dotClass: 'border-red-400 bg-red-400/20',
+      labelClass: 'text-red-400',
+      animate: 'bounce',
+      current,
+      upcoming: rest,
+    };
+  }
+  if (diff <= 180) {
+    return {
+      label: `${Math.ceil(diff / 60)} min`,
+      sublabel: formatClockTime(current.time),
+      dotClass: 'border-yellow-400 bg-yellow-400/20',
+      labelClass: 'text-yellow-400',
+      animate: 'pulse',
+      current,
+      upcoming: rest,
+    };
   }
   if (diff <= 300) {
-    return { display: { text: formatCountdown(current.time, now), className: 'text-amber-400' }, current, upcoming };
+    return {
+      label: `${Math.ceil(diff / 60)} min`,
+      sublabel: formatClockTime(current.time),
+      dotClass: 'border-yellow-400 bg-yellow-400/10',
+      labelClass: 'text-yellow-400',
+      animate: 'none',
+      current,
+      upcoming: rest,
+    };
   }
-  return { display: { text: formatCountdown(current.time, now), className: 'text-sky-400' }, current, upcoming };
+  const mins = Math.round(diff / 60);
+  return {
+    label: `${mins} min`,
+    sublabel: formatClockTime(current.time),
+    dotClass: 'border-sky-500/40 bg-slate-800',
+    labelClass: 'text-sky-400',
+    animate: 'none',
+    current,
+    upcoming: rest,
+  };
 }
 
 /** Destination input + result, shared between the empty-map state and the Directions tab. */
@@ -227,6 +343,7 @@ export default function RailLineSection() {
 
   // Stop view: tap a stop in the list to see every route serving it + live arrivals.
   const [selectedStop, setSelectedStop] = useState<{ stopId: string; stopName: string } | null>(null);
+  const [vehiclesExpanded, setVehiclesExpanded] = useState(false);
   const [stopRoutes, setStopRoutes] = useState<RouteAtStop[] | null>(null);
   useEffect(() => {
     if (!selectedStop) {
@@ -723,56 +840,69 @@ export default function RailLineSection() {
             </div>
           ) : (
           <>
-          {/* Live vehicles */}
+          {/* Live vehicles — collapsed by default */}
           <div className="mb-4">
-            <h4 className="mb-1 text-sm font-medium text-slate-300">{isBus ? 'Live Buses' : 'Live Trains'} ({vehicles.length})</h4>
-            {vehicles.length === 0 ? (
-              <p className="text-sm text-slate-500">{isBus ? 'No active buses right now.' : 'No active trains right now.'}</p>
-            ) : (
-              <ul className="space-y-1.5">
-                {vehicles.map((v, i) => {
-                  const vDir = directions.find((d) => d.directionId === v.directionId);
-                  const headsign = vDir?.headsign;
-                  const nextStopName = v.stopId ? directions.flatMap((d) => d.stops).find((s) => s.stop_id === v.stopId)?.stop_name : undefined;
-                  const dirColor = v.directionId === 1 ? '#c084fc' : '#38bdf8';
-                  const delayLabel = formatDelay(v.delaySeconds);
-                  const delayClass =
-                    v.delaySeconds == null
-                      ? 'text-slate-500'
-                      : Math.abs(v.delaySeconds) < 60
-                        ? 'text-emerald-400'
-                        : v.delaySeconds > 0
-                          ? 'text-amber-400'
-                          : 'text-sky-400';
-                  const statusLabel = VEHICLE_STATUS_LABELS[v.status ?? ''] ?? null;
-                  return (
-                    <li key={v.id} className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/60 p-2">
-                      <span
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-base"
-                        style={{ backgroundColor: `${dirColor}22`, borderColor: dirColor }}
-                      >
-                        {isBus ? '🚌' : '🚆'}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-100">
-                          {isBus ? 'Bus' : 'Train'} {i + 1}
-                          {headsign && <span className="font-normal text-slate-400"> → {headsign}</span>}
-                        </p>
-                        {nextStopName && (
-                          <p className="truncate text-xs text-slate-400">
-                            {v.status === 'STOPPED_AT' ? 'At ' : v.status === 'INCOMING_AT' ? 'Arriving at ' : 'Next stop: '}
-                            {nextStopName}
-                          </p>
-                        )}
-                        {v.occupancyStatus && <p className="truncate text-xs text-slate-500">👥 {formatOccupancy(v.occupancyStatus)}{v.occupancyPercentage != null && ` (${Math.min(100, v.occupancyPercentage)}%)`}</p>}
-                      </div>
-                      <div className="shrink-0 text-right text-xs">
-                        {delayLabel ? <p className={delayClass}>{delayLabel}</p> : statusLabel ? <p className="text-slate-400">{statusLabel}</p> : <p className="text-slate-600">—</p>}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+            <button
+              type="button"
+              onClick={() => setVehiclesExpanded((v) => !v)}
+              className="flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm"
+            >
+              <span className="font-medium text-slate-300">
+                {isBus ? 'Live Buses' : 'Live Trains'} <span className="text-slate-500">({vehicles.length})</span>
+              </span>
+              <span className="text-slate-500">{vehiclesExpanded ? '▲' : '▼'}</span>
+            </button>
+            {vehiclesExpanded && (
+              <div className="mt-1.5">
+                {vehicles.length === 0 ? (
+                  <p className="px-1 text-sm text-slate-500">{isBus ? 'No active buses right now.' : 'No active trains right now.'}</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {vehicles.map((v, i) => {
+                      const vDir = directions.find((d) => d.directionId === v.directionId);
+                      const headsign = vDir?.headsign;
+                      const nextStopName = v.stopId ? directions.flatMap((d) => d.stops).find((s) => s.stop_id === v.stopId)?.stop_name : undefined;
+                      const dirColor = v.directionId === 1 ? '#c084fc' : '#38bdf8';
+                      const delayLabel = formatDelay(v.delaySeconds);
+                      const delayClass =
+                        v.delaySeconds == null
+                          ? 'text-slate-500'
+                          : Math.abs(v.delaySeconds) < 60
+                            ? 'text-emerald-400'
+                            : v.delaySeconds > 0
+                              ? 'text-amber-400'
+                              : 'text-sky-400';
+                      const statusLabel = VEHICLE_STATUS_LABELS[v.status ?? ''] ?? null;
+                      return (
+                        <li key={v.id} className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/60 p-2">
+                          <span
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-base"
+                            style={{ backgroundColor: `${dirColor}22`, borderColor: dirColor }}
+                          >
+                            {isBus ? '🚌' : '🚆'}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-slate-100">
+                              {isBus ? 'Bus' : 'Train'} {i + 1}
+                              {headsign && <span className="font-normal text-slate-400"> → {headsign}</span>}
+                            </p>
+                            {nextStopName && (
+                              <p className="truncate text-xs text-slate-400">
+                                {v.status === 'STOPPED_AT' ? 'At ' : v.status === 'INCOMING_AT' ? 'Arriving at ' : 'Next stop: '}
+                                {nextStopName}
+                              </p>
+                            )}
+                            {v.occupancyStatus && <p className="truncate text-xs text-slate-500">👥 {formatOccupancy(v.occupancyStatus)}{v.occupancyPercentage != null && ` (${Math.min(100, v.occupancyPercentage)}%)`}</p>}
+                          </div>
+                          <div className="shrink-0 text-right text-xs">
+                            {delayLabel ? <p className={delayClass}>{delayLabel}</p> : statusLabel ? <p className="text-slate-400">{statusLabel}</p> : <p className="text-slate-600">—</p>}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
 
@@ -787,80 +917,45 @@ export default function RailLineSection() {
                   const stopIndexById = new Map(dir.stops.map((s, i) => [s.stop_id, i]));
                   return dir.stops.map((stop, idx) => {
                   const arrivals = arrivalsByStop[`${stop.stop_id}|${dir.directionId}`] ?? [];
-                  const { current: next, upcoming } = getCountdownDisplay(arrivals, now);
                   const stopLabel = idx === 0 ? 'Departs' : 'Arrives';
                   const stopKey = `${stop.stop_id}|${dir.directionId}`;
                   const isSkipped = skippedStops.has(stopKey);
                   const scheduled = formatScheduledTime(stop.departure_time ?? stop.arrival_time);
 
-                  // Match this stop's next predicted arrival to the live vehicle running that
-                  // trip, then use the vehicle's *reported* status (not just time math) to
-                  // decide the wording: Arrived / Arriving / Departed / X min / Scheduled.
-                  const matched = next ? vehicleByTripId[next.tripId] : undefined;
-                  const vIdx = matched?.stopId != null ? stopIndexById.get(matched.stopId) : undefined;
-                  const atThisStop = matched != null && vIdx === idx;
-                  const passedThisStop = matched != null && vIdx != null && vIdx > idx;
-                  const trainApproaching = atThisStop && matched!.status === 'IN_TRANSIT_TO';
-
-                  // With ~30s feed polling, GPS often never reports STOPPED_AT for a brief
-                  // mid-route dwell — it just jumps straight to IN_TRANSIT_TO for the next
-                  // stop. So rather than rely on currentStatus catching that, treat ANY
-                  // predicted arrival whose [arrival, departure] window straddles "now"
-                  // (with a few seconds of padding) as "Arrived here right now" — this
-                  // guarantees a real "Arrived"/"Departed" beat at every stop, not just
-                  // termini where GPS has time to report STOPPED_AT.
                   const nowSec = now / 1000;
-                  const dwelling = arrivals.find((a) => {
-                    const dep = a.departureTime ?? a.time;
-                    return nowSec >= a.time - 5 && nowSec < Math.max(dep, a.time + 15) + 5;
-                  });
-                  const dwellingDeparted = dwelling != null && nowSec >= Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
-                  const trainHere = (atThisStop && (matched!.status === 'STOPPED_AT' || matched!.status === 'INCOMING_AT')) || (dwelling != null && !dwellingDeparted);
+                  const isTerminal = idx === 0 || idx === dir.stops.length - 1;
+                  const phase = isSkipped
+                    ? null
+                    : computeStopPhase(arrivals, nowSec, isTerminal);
 
-                  let dotClasses = 'border-slate-600 bg-slate-800';
+                  const matched = phase?.current ? vehicleByTripId[phase.current.tripId] : undefined;
+                  const vIdx = matched?.stopId != null ? stopIndexById.get(matched.stopId) : undefined;
+                  const trainApproaching = matched != null && vIdx != null && vIdx < idx && matched.status === 'IN_TRANSIT_TO';
+                  const trainHere = phase != null && (phase.label === 'Arrived' || phase.label === 'At Platform' || phase.label === 'Departing');
+
+                  const dotClasses = isSkipped
+                    ? 'border-red-500 bg-red-500/30'
+                    : phase?.dotClass ?? 'border-slate-700 bg-slate-800';
+
                   let statusNode: React.ReactNode = null;
                   let timeMain: React.ReactNode;
                   let timeSub: string | null = null;
 
                   if (isSkipped) {
-                    dotClasses = 'border-red-500 bg-red-500/30';
                     statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-red-400">Skipping</span>;
                     timeMain = '—';
-                  } else if (dwelling && !dwellingDeparted) {
-                    dotClasses = 'border-amber-400 bg-amber-400';
-                    statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-amber-400">Arrived</span>;
-                    timeMain = <span className="text-base font-bold text-amber-400">Arrived</span>;
-                    timeSub = `${formatClockTime(dwelling.time)} · ${stopLabel}`;
-                  } else if (dwelling && dwellingDeparted) {
-                    dotClasses = 'border-slate-500 bg-slate-600';
-                    statusNode = <span className="text-xs font-medium text-slate-500">Departed</span>;
-                    timeMain = <span className="text-base font-bold text-slate-500">Departed</span>;
-                    timeSub = `${formatClockTime(dwelling.time)} · ${stopLabel}`;
-                  } else if (atThisStop && matched!.status === 'STOPPED_AT') {
-                    dotClasses = 'border-amber-400 bg-amber-400';
-                    statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-amber-400">Arrived</span>;
-                    timeMain = <span className="text-base font-bold text-amber-400">Arrived</span>;
-                    timeSub = `${formatClockTime(next!.time)} · ${stopLabel}`;
-                  } else if (atThisStop && matched!.status === 'INCOMING_AT') {
-                    dotClasses = 'border-amber-400 bg-amber-400';
-                    statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-amber-400">Arriving</span>;
-                    timeMain = <span className="text-base font-bold text-amber-400">Arriving</span>;
-                    timeSub = `${formatClockTime(next!.time)} · ${stopLabel}`;
-                  } else if (atThisStop && next && Math.round((next.time * 1000 - now) / 60000) <= 1) {
-                    dotClasses = 'border-amber-400 bg-amber-400';
-                    statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-amber-400">Arriving</span>;
-                    timeMain = <span className="text-base font-bold text-amber-400">Arriving</span>;
-                    timeSub = `${formatClockTime(next.time)} · ${stopLabel}`;
-                  } else if (passedThisStop) {
-                    dotClasses = 'border-slate-500 bg-slate-600';
-                    statusNode = <span className="text-xs font-medium text-slate-500">Departed</span>;
-                    timeMain = <span className="text-base font-bold text-slate-500">Departed</span>;
-                    timeSub = next ? `${formatClockTime(next.time)} · ${stopLabel}` : null;
-                  } else if (next) {
-                    dotClasses = 'border-emerald-400 bg-emerald-400/20';
-                    statusNode = <span className="text-xs font-medium text-emerald-400">Live GPS tracking</span>;
-                    timeMain = <span className="text-base font-bold text-sky-400">{formatCountdown(next.time, now)}</span>;
-                    timeSub = `${formatClockTime(next.time)} · ${stopLabel}`;
+                  } else if (phase) {
+                    statusNode = (
+                      <span className={`text-xs font-semibold uppercase tracking-wide ${phase.labelClass} ${phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
+                        {phase.label}
+                      </span>
+                    );
+                    timeMain = (
+                      <span className={`text-base font-bold ${phase.labelClass} ${phase.animate === 'bounce' ? 'animate-bounce' : phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
+                        {phase.label}
+                      </span>
+                    );
+                    timeSub = phase.sublabel ? `${phase.sublabel} · ${stopLabel}` : (scheduled ? stopLabel : null);
                   } else {
                     statusNode = <span className="text-xs text-slate-600">Scheduled</span>;
                     timeMain = <span className="text-base font-bold text-slate-500">{scheduled ?? '—'}</span>;
@@ -871,7 +966,7 @@ export default function RailLineSection() {
 
                   return (
                     <div key={stop.stop_id} className={`relative ${isSkipped ? 'opacity-50' : ''}`}>
-                      <span className={`absolute -left-6 top-1 h-3.5 w-3.5 rounded-full border-2 ${dotClasses}`} />
+                      <span className={`absolute -left-6 top-1 h-3.5 w-3.5 rounded-full border-2 transition-colors duration-300 ${dotClasses}`} />
                       {trainApproaching && (
                         <button
                           type="button"
@@ -882,7 +977,7 @@ export default function RailLineSection() {
                           {isBus ? '🚌' : '🚆'}
                         </button>
                       )}
-                      {trainHere && (
+                      {trainHere && !trainApproaching && (
                         <button
                           type="button"
                           onClick={() => setSelectedVehicleStop((cur) => (cur === stopKey ? null : stopKey))}
@@ -905,8 +1000,13 @@ export default function RailLineSection() {
                             </span>
                           )}
                           <div>{statusNode}</div>
-                          {upcoming.length > 0 && (
-                            <p className="mt-0.5 text-xs text-slate-600">then {upcoming.map((a) => formatCountdown(a.time, now)).join(', ')}</p>
+                          {phase && phase.upcoming.length > 0 && (
+                            <p className="mt-0.5 text-xs text-slate-600">
+                              then {phase.upcoming.slice(0, 2).map((a) => {
+                                const d = a.time - nowSec;
+                                return d > 60 ? `${Math.round(d / 60)} min` : d > 0 ? `${Math.ceil(d)}s` : 'soon';
+                              }).join(', ')}
+                            </p>
                           )}
                           {selectedVehicleStop === stopKey && matched && (
                             <p className="mt-1 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300">
@@ -923,44 +1023,92 @@ export default function RailLineSection() {
                       </button>
 
                       {expanded && (
-                        <div className="mt-2 rounded-lg border border-sky-900/60 bg-slate-950 p-3">
-                          <p className="text-xs text-slate-400">
-                            Scheduled {stopLabel.toLowerCase()}: <span className="font-semibold text-slate-200">{scheduled ?? '—'}</span>
-                          </p>
-                          <div className="mt-2 border-t border-slate-800 pt-2">
-                            {stopRoutes === null ? (
-                              <p className="text-sm text-slate-500">Loading other routes…</p>
-                            ) : stopRoutes.length === 0 ? (
-                              <p className="text-sm text-slate-500">No other routes found for this stop in the imported schedule.</p>
-                            ) : (
-                              <div className="space-y-1.5">
-                                {stopRoutes.map((r) => {
-                                  const liveArrivals = getArrivalsForStop(tripUpdates, selectedStop!.stopId).filter((a) => a.routeId === r.routeId);
+                        <div className="mt-2 space-y-3 rounded-lg border border-sky-900/60 bg-slate-950 p-3">
+                          {/* Scheduled time */}
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-slate-500">Scheduled {stopLabel.toLowerCase()}</span>
+                            <span className="font-semibold text-slate-200">{scheduled ?? '—'}</span>
+                          </div>
+
+                          {/* All upcoming arrivals for this route at this stop */}
+                          {arrivals.length > 0 && (
+                            <div className="border-t border-slate-800 pt-2">
+                              <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Upcoming on this line</p>
+                              <div className="space-y-1">
+                                {arrivals.slice(0, 4).map((a, ai) => {
+                                  const d = a.time - nowSec;
+                                  const isNow = d > -25 && d < 30;
+                                  let countText: string;
+                                  let countClass: string;
+                                  if (d <= 0) { countText = 'Departed'; countClass = 'text-slate-500'; }
+                                  else if (d <= 7) { countText = 'Arriving'; countClass = 'text-red-400 animate-pulse'; }
+                                  else if (d <= 30) { countText = 'Arriving soon'; countClass = 'text-red-400 animate-pulse'; }
+                                  else if (d <= 60) { countText = `:${String(Math.ceil(d)).padStart(2,'0')}`; countClass = 'text-red-400'; }
+                                  else if (d <= 300) { countText = `${Math.ceil(d/60)} min`; countClass = 'text-yellow-400'; }
+                                  else { countText = `${Math.round(d/60)} min`; countClass = 'text-sky-400'; }
                                   return (
-                                    <div key={r.shortName} className="flex items-center gap-2 text-sm">
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          selectLine(r.shortName);
-                                          setSelectedStop(null);
-                                        }}
-                                        title={`${r.longName} — switch to this route`}
-                                        className="flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-bold text-slate-950 hover:opacity-80"
-                                        style={{ backgroundColor: r.color ?? '#38bdf8' }}
-                                      >
-                                        {r.shortName}
-                                      </button>
-                                      <span className="min-w-0 flex-1 truncate text-slate-400">{r.longName}</span>
-                                      <span className="text-xs text-slate-300">
-                                        {liveArrivals.length > 0 ? liveArrivals.slice(0, 3).map((a) => formatCountdown(a.time, now)).join(', ') : 'no live arrivals'}
-                                      </span>
+                                    <div key={ai} className={`flex items-center justify-between text-xs ${isNow ? 'rounded bg-slate-800/60 px-1.5 py-0.5' : ''}`}>
+                                      <span className="text-slate-400">{formatClockTime(a.time)}</span>
+                                      <div className="flex items-center gap-2">
+                                        {a.delaySeconds != null && Math.abs(a.delaySeconds) >= 60 && (
+                                          <span className={a.delaySeconds > 0 ? 'text-yellow-500' : 'text-emerald-500'}>
+                                            {a.delaySeconds > 0 ? '+' : ''}{Math.round(a.delaySeconds / 60)} min
+                                          </span>
+                                        )}
+                                        <span className={`font-semibold ${countClass}`}>{countText}</span>
+                                      </div>
                                     </div>
                                   );
                                 })}
                               </div>
-                            )}
-                          </div>
+                            </div>
+                          )}
+
+                          {/* Other routes at this stop */}
+                          {(stopRoutes === null || stopRoutes.length > 0) && (
+                            <div className="border-t border-slate-800 pt-2">
+                              <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Also stops here</p>
+                              {stopRoutes === null ? (
+                                <p className="text-xs text-slate-500">Loading…</p>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {stopRoutes.map((r) => {
+                                    const liveArrivals = getArrivalsForStop(tripUpdates, selectedStop!.stopId).filter((a) => a.routeId === r.routeId);
+                                    return (
+                                      <div key={r.shortName} className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            selectLine(r.shortName);
+                                            setSelectedStop(null);
+                                          }}
+                                          title={`Switch to ${r.longName}`}
+                                          className="flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-bold text-slate-950 hover:opacity-80"
+                                          style={{ backgroundColor: r.color ?? '#38bdf8' }}
+                                        >
+                                          {r.shortName}
+                                        </button>
+                                        <span className="min-w-0 flex-1 truncate text-xs text-slate-400">{r.longName}</span>
+                                        <span className="shrink-0 text-xs">
+                                          {liveArrivals.length > 0 ? (
+                                            <span className="text-sky-400">
+                                              {liveArrivals.slice(0, 2).map((a) => {
+                                                const d = a.time - nowSec;
+                                                return d <= 60 ? `${Math.ceil(d)}s` : `${Math.round(d/60)} min`;
+                                              }).join(', ')}
+                                            </span>
+                                          ) : (
+                                            <span className="text-slate-600">no live data</span>
+                                          )}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
