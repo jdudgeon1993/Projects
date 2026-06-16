@@ -58,11 +58,6 @@ function interpolatePosition(
   // For stopped/incoming, the GPS fix is authoritative — no interpolation.
   if (v.status !== 'IN_TRANSIT_TO') return { lat: rawLat, lon: rawLon };
 
-  // Cap: if the feed fix is too old, trust it less but still use it as-is.
-  if (v.feedTimestamp != null && nowSec - v.feedTimestamp > 90) {
-    return { lat: rawLat, lon: rawLon };
-  }
-
   if (!tripUpdates?.entity || !v.tripId) return { lat: rawLat, lon: rawLon };
 
   const entity = tripUpdates.entity.find((e) => e.tripUpdate?.trip?.tripId === v.tripId);
@@ -77,7 +72,7 @@ function interpolatePosition(
   for (let i = 0; i < stus.length - 1; i++) {
     const depTime = Number(stus[i].departure?.time ?? stus[i].arrival?.time ?? 0);
     const arrTime = Number(stus[i + 1].arrival?.time ?? stus[i + 1].departure?.time ?? 0);
-    if (depTime > 0 && arrTime > 0 && depTime <= nowSec && arrTime > nowSec - 30) {
+    if (depTime > 0 && arrTime > 0 && depTime <= nowSec && arrTime >= nowSec) {
       fromIdx = i;
       break;
     }
@@ -211,6 +206,8 @@ export default function RailLineMap({
         const existing = markerRefs.current.get(v.id)!;
         existing.setStyle({ fillColor: trainColor(v) });
         existing.setPopupContent(popupText);
+        // Snap to the new GPS fix immediately so we don't interpolate from a stale position.
+        existing.setLatLng([v.lat, v.lon]);
       } else {
         const marker = L.circleMarker([v.lat, v.lon], {
           radius: 7,

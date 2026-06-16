@@ -131,31 +131,39 @@ export function useRailLine(shortName: string | null) {
 
   const effectiveRouteId = routeId ?? shortName;
 
-  const vehicles: LiveVehicle[] = useMemo(() => (vehiclePositions?.entity ?? [])
-    .filter((e: any) => effectiveRouteId != null && e.vehicle?.trip?.routeId === effectiveRouteId)
-    .map((e: any) => {
-      const v = e.vehicle;
-      const { delaySeconds } = getTripDelay(tripUpdates, {
-        trip_id: v.trip?.tripId,
-        route_id: v.trip?.routeId,
-        direction_id: v.trip?.directionId,
-      });
+  const vehicles: LiveVehicle[] = useMemo(() => {
+    // Don't show vehicles until the real routeId is resolved — shortName may not
+    // match the internal route_id in the feed and would silently show nothing or
+    // accidentally match a different route.
+    if (!routeId) return [];
+    return (vehiclePositions?.entity ?? [])
+      .filter((e: any) => e.vehicle?.trip?.routeId === routeId)
+      .map((e: any) => {
+        const v = e.vehicle;
+        const { delaySeconds } = getTripDelay(tripUpdates, {
+          trip_id: v.trip?.tripId,
+          route_id: v.trip?.routeId,
+          direction_id: v.trip?.directionId != null ? Number(v.trip.directionId) : undefined,
+          // TripDescriptor.start_time is stable across mid-day trip_id rotations.
+          start_time: v.trip?.startTime,
+        });
 
-      return {
-        id: e.id,
-        lat: v.position?.latitude,
-        lon: v.position?.longitude,
-        bearing: v.position?.bearing,
-        status: v.currentStatus,
-        tripId: v.trip?.tripId,
-        directionId: v.trip?.directionId != null ? Number(v.trip.directionId) : undefined,
-        stopId: v.stopId,
-        delaySeconds,
-        occupancyStatus: v.occupancyStatus && v.occupancyStatus !== 'NO_DATA_AVAILABLE' ? v.occupancyStatus : undefined,
-        occupancyPercentage: v.occupancyPercentage,
-        feedTimestamp: v.timestamp != null ? Number(v.timestamp) : undefined,
-      };
-    }), [vehiclePositions, tripUpdates, effectiveRouteId]);
+        return {
+          id: e.id,
+          lat: v.position?.latitude,
+          lon: v.position?.longitude,
+          bearing: v.position?.bearing,
+          status: v.currentStatus,
+          tripId: v.trip?.tripId,
+          directionId: v.trip?.directionId != null ? Number(v.trip.directionId) : undefined,
+          stopId: v.stopId,
+          delaySeconds,
+          occupancyStatus: v.occupancyStatus && v.occupancyStatus !== 'NO_DATA_AVAILABLE' ? v.occupancyStatus : undefined,
+          occupancyPercentage: v.occupancyPercentage,
+          feedTimestamp: v.timestamp != null ? Number(v.timestamp) : undefined,
+        };
+      });
+  }, [vehiclePositions, tripUpdates, routeId]);
 
   const arrivalsByStop: Record<string, UpcomingArrival[]> = useMemo(
     () => getUpcomingArrivalsByStop(tripUpdates, effectiveRouteId ?? ''),

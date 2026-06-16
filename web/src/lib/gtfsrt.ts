@@ -197,14 +197,16 @@ message Translation {
 }
 `;
 
-let feedMessageType: protobuf.Type | null = null;
+let feedMessageTypePromise: Promise<protobuf.Type> | null = null;
 
 async function getFeedMessageType(): Promise<protobuf.Type> {
-  if (!feedMessageType) {
-    const root = protobuf.parse(GTFS_RT_PROTO).root;
-    feedMessageType = root.lookupType('transit_realtime.FeedMessage');
+  if (!feedMessageTypePromise) {
+    feedMessageTypePromise = Promise.resolve().then(() => {
+      const root = protobuf.parse(GTFS_RT_PROTO).root;
+      return root.lookupType('transit_realtime.FeedMessage');
+    });
   }
-  return feedMessageType;
+  return feedMessageTypePromise;
 }
 
 export interface ParsedFeed {
@@ -293,7 +295,7 @@ export function getActiveAlerts(
         cause: alert.cause && alert.cause !== 'UNKNOWN_CAUSE' ? alert.cause : null,
         effect: alert.effect && alert.effect !== 'UNKNOWN_EFFECT' ? alert.effect : null,
         url: alert.url?.translation?.[0]?.text || null,
-        updatedAt: Math.max(0, ...((alert.activePeriod || []) as any[]).map((p) => Number(p.start || 0))),
+        updatedAt: Math.max(0, ...((alert.activePeriod || []) as any[]).map((p) => Number(p.start || 0)).filter((t) => t > 0), 0),
       };
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -307,35 +309,67 @@ export interface TripDelayResult {
 /** Multi-tier match: exact trip_id, then route+direction+time within +/- windowMinutes. */
 export function getTripDelay(
   tripUpdatesFeed: ParsedFeed | null,
-  train: { trip_id: string; route_id?: string; direction_id?: number; departure_time?: string },
+  train: { trip_id: string; route_id?: string; direction_id?: number; departure_time?: string; start_time?: string },
   windowMinutes = 10,
 ): TripDelayResult {
   const entities = tripUpdatesFeed?.entity;
   if (!entities) return { delaySeconds: null, matchTier: 'none' };
 
+  // Tier 1: exact trip_id match.
   let match = entities.find((e) => e.tripUpdate?.trip?.tripId === train.trip_id);
   if (match) {
-    return { delaySeconds: match.tripUpdate.delay ?? null, matchTier: 'trip_id' };
+    // Top-level TripUpdate.delay is often absent; fall back to the first stop's delay.
+    const topLevel = match.tripUpdate.delay ?? null;
+    if (topLevel !== null) return { delaySeconds: topLevel, matchTier: 'trip_id' };
+    const stus: any[] = match.tripUpdate.stopTimeUpdate ?? [];
+    const firstDelay = stus[0]?.departure?.delay ?? stus[0]?.arrival?.delay ?? null;
+    return { delaySeconds: firstDelay, matchTier: 'trip_id' };
   }
 
+  // Tier 2: match by TripDescriptor.start_time (RTD puts this in the trip descriptor
+  // and it's stable across trip_id rotations).
+  if (train.start_time && train.route_id && train.direction_id !== undefined) {
+    match = entities.find((e) => {
+      const trip = e.tripUpdate?.trip;
+      return trip?.routeId === train.route_id &&
+        Number(trip?.directionId ?? -1) === train.direction_id &&
+        trip?.startTime === train.start_time;
+    });
+    if (match) {
+      const topLevel = match.tripUpdate.delay ?? null;
+      if (topLevel !== null) return { delaySeconds: topLevel, matchTier: 'route_time' };
+      const stus: any[] = match.tripUpdate.stopTimeUpdate ?? [];
+      const firstDelay = stus[0]?.departure?.delay ?? stus[0]?.arrival?.delay ?? null;
+      return { delaySeconds: firstDelay, matchTier: 'route_time' };
+    }
+  }
+
+  // Tier 3: match by route + direction + scheduled departure time window.
   if (train.route_id && train.direction_id !== undefined && train.departure_time) {
     const trainMinutes = timeToMinutes(train.departure_time);
     match = entities.find((e) => {
       const trip = e.tripUpdate?.trip;
       if (!trip) return false;
       if (trip.routeId !== train.route_id) return false;
-      if (Number(trip.directionId ?? 0) !== train.direction_id) return false;
+      if (Number(trip.directionId ?? -1) !== train.direction_id) return false;
 
       const stopTimes = e.tripUpdate?.stopTimeUpdate || [];
       return stopTimes.some((stu: any) => {
         const time = stu.departure?.time ?? stu.arrival?.time;
         if (!time) return false;
-        const rtMinutes = new Date(Number(time) * 1000).getHours() * 60 + new Date(Number(time) * 1000).getMinutes();
+        // Parse in Denver local time to match GTFS scheduled times.
+        const d = new Date(Number(time) * 1000);
+        const mst = new Date(d.toLocaleString('en-US', { timeZone: 'America/Denver' }));
+        const rtMinutes = mst.getHours() * 60 + mst.getMinutes();
         return Math.abs(rtMinutes - trainMinutes) <= windowMinutes;
       });
     });
     if (match) {
-      return { delaySeconds: match.tripUpdate.delay ?? null, matchTier: 'route_time' };
+      const topLevel = match.tripUpdate.delay ?? null;
+      if (topLevel !== null) return { delaySeconds: topLevel, matchTier: 'route_time' };
+      const stus: any[] = match.tripUpdate.stopTimeUpdate ?? [];
+      const firstDelay = stus[0]?.departure?.delay ?? stus[0]?.arrival?.delay ?? null;
+      return { delaySeconds: firstDelay, matchTier: 'route_time' };
     }
   }
 
@@ -356,6 +390,10 @@ export interface UpcomingArrival {
  * Live predicted arrivals per stop+direction for a route, derived from Trip Updates
  * (no static schedule needed). Key is `${stopId}|${directionId}`.
  */
+// Grace window: keep recently-departed stop times visible so the UI can show "Departed".
+// Must exceed the poll interval (30 s) to avoid disappearing between feed refreshes.
+const DEPARTED_GRACE_SEC = 90;
+
 export function getUpcomingArrivalsByStop(
   tripUpdatesFeed: ParsedFeed | null,
   routeId: string,
@@ -370,13 +408,14 @@ export function getUpcomingArrivalsByStop(
   for (const e of entities) {
     const trip = e.tripUpdate?.trip;
     if (!trip || trip.routeId !== routeId) continue;
-    const directionId = Number(trip.directionId ?? 0);
+    // Skip entities with no direction_id — can't bucket them correctly.
+    if (trip.directionId == null) continue;
+    const directionId = Number(trip.directionId);
 
     const tripDelay = e.tripUpdate.delay ?? null;
     for (const stu of e.tripUpdate.stopTimeUpdate || []) {
       const time = Number(stu.arrival?.time ?? stu.departure?.time);
-      // Keep recently-departed trips around briefly so the UI can show a "Departed" state.
-      if (!time || time < now - 15) continue;
+      if (!time || time < now - DEPARTED_GRACE_SEC) continue;
       const stopId = stu.stopId;
       if (!stopId) continue;
 
@@ -418,7 +457,7 @@ export function getArrivalsForStop(tripUpdatesFeed: ParsedFeed | null, stopId: s
     for (const stu of e.tripUpdate.stopTimeUpdate || []) {
       if (stu.stopId !== stopId) continue;
       const time = Number(stu.arrival?.time ?? stu.departure?.time);
-      if (!time || time < now) continue;
+      if (!time || time < now - DEPARTED_GRACE_SEC) continue;
       arrivals.push({
         routeId: trip.routeId,
         directionId: Number(trip.directionId ?? 0),

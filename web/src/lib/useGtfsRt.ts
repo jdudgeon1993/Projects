@@ -38,22 +38,28 @@ export function useGtfsRt(): GtfsRtState {
       const errors = results
         .map((r, i) => (r.status === 'rejected' ? `${labels[i]}: ${r.reason?.message ?? r.reason}` : null))
         .filter(Boolean);
+      const anySuccess = results.some((r) => r.status === 'fulfilled');
 
       setState((prev) => ({
         tripUpdates: tu.status === 'fulfilled' ? tu.value : prev.tripUpdates,
         vehiclePositions: vp.status === 'fulfilled' ? vp.value : prev.vehiclePositions,
         alerts: al.status === 'fulfilled' ? al.value : prev.alerts,
-        lastUpdated: new Date(),
+        lastUpdated: anySuccess ? new Date() : prev.lastUpdated,
         error: errors.length > 0 ? errors.join('; ') : null,
         loading: false,
       }));
     }
 
-    poll();
+    // Attempt a quick retry on initial failure before the regular 30 s cycle kicks in.
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+    poll().catch(() => {
+      if (mounted.current) retryTimeout = setTimeout(poll, 5_000);
+    });
     const interval = setInterval(poll, POLL_INTERVAL_MS);
     return () => {
       mounted.current = false;
       clearInterval(interval);
+      if (retryTimeout) clearTimeout(retryTimeout);
     };
   }, []);
 
