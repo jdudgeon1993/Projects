@@ -87,6 +87,17 @@ function formatClockTime(unixSeconds: number): string {
 }
 
 
+/** Unified countdown text + color class for a single arrival, used in all panels. */
+function countdownLabel(diffSec: number): { text: string; cls: string } {
+  if (diffSec <= 0) return { text: 'Departed', cls: 'text-slate-500' };
+  if (diffSec <= 7) return { text: 'Arriving', cls: 'text-red-400 animate-pulse' };
+  if (diffSec <= 30) return { text: 'Arriving soon', cls: 'text-red-400 animate-pulse' };
+  if (diffSec <= 60) return { text: `:${String(Math.ceil(diffSec)).padStart(2, '0')}`, cls: 'text-red-400 animate-bounce' };
+  if (diffSec <= 180) return { text: `${Math.ceil(diffSec / 60)} min`, cls: 'text-yellow-400' };
+  if (diffSec <= 300) return { text: `${Math.ceil(diffSec / 60)} min`, cls: 'text-yellow-400/60' };
+  return { text: `${Math.round(diffSec / 60)} min`, cls: 'text-sky-400' };
+}
+
 interface PhaseInfo {
   label: string;
   sublabel: string | null;
@@ -1051,14 +1062,7 @@ export default function RailLineSection() {
                                 {arrivals.slice(0, 4).map((a, ai) => {
                                   const d = a.time - nowSec;
                                   const isNow = d > -25 && d < 30;
-                                  let countText: string;
-                                  let countClass: string;
-                                  if (d <= 0) { countText = 'Departed'; countClass = 'text-slate-500'; }
-                                  else if (d <= 7) { countText = 'Arriving'; countClass = 'text-red-400 animate-pulse'; }
-                                  else if (d <= 30) { countText = 'Arriving soon'; countClass = 'text-red-400 animate-pulse'; }
-                                  else if (d <= 60) { countText = `:${String(Math.ceil(d)).padStart(2,'0')}`; countClass = 'text-red-400'; }
-                                  else if (d <= 300) { countText = `${Math.ceil(d/60)} min`; countClass = 'text-yellow-400'; }
-                                  else { countText = `${Math.round(d/60)} min`; countClass = 'text-sky-400'; }
+                                  const { text: countText, cls: countClass } = countdownLabel(d);
                                   return (
                                     <div key={ai} className={`flex items-center justify-between text-xs ${isNow ? 'rounded bg-slate-800/60 px-1.5 py-0.5' : ''}`}>
                                       <span className="text-slate-400">{formatClockTime(a.time)}</span>
@@ -1127,15 +1131,7 @@ export default function RailLineSection() {
                                         <div className="space-y-1">
                                           {allLive.map((a) => {
                                             const d = a.time - nowSec;
-                                            let countText: string;
-                                            let countClass: string;
-                                            if (d <= 0) { countText = 'Departed'; countClass = 'text-slate-500'; }
-                                            else if (d <= 7) { countText = 'Arriving'; countClass = 'text-red-400 animate-pulse'; }
-                                            else if (d <= 30) { countText = 'Arriving soon'; countClass = 'text-red-400 animate-pulse'; }
-                                            else if (d <= 60) { countText = `:${String(Math.ceil(d)).padStart(2, '0')}`; countClass = 'text-red-400'; }
-                                            else if (d <= 180) { countText = `${Math.ceil(d / 60)} min`; countClass = 'text-yellow-400'; }
-                                            else if (d <= 300) { countText = `${Math.ceil(d / 60)} min`; countClass = 'text-yellow-400'; }
-                                            else { countText = `${Math.round(d / 60)} min`; countClass = 'text-sky-400'; }
+                                            const { text: countText, cls: countClass } = countdownLabel(d);
                                             return (
                                               <div key={a.tripId} className="flex items-center justify-between text-xs">
                                                 <div className="flex items-center gap-1.5">
@@ -1152,17 +1148,19 @@ export default function RailLineSection() {
                                             );
                                           })}
 
-                                          {scheduledToShow.map((s, si) => (
-                                            <div key={si} className="flex items-center justify-between text-xs">
-                                              <div className="flex items-center gap-1.5">
-                                                <span className="text-slate-400">{s.timeDisplay}</span>
-                                                <span className="text-[10px] text-slate-600">sched</span>
+                                          {scheduledToShow.map((s, si) => {
+                                            const nowMins = now / 1000 / 60;
+                                            const { text: countText, cls: countClass } = countdownLabel((s.timeMinutes - nowMins) * 60);
+                                            return (
+                                              <div key={si} className="flex items-center justify-between text-xs">
+                                                <div className="flex items-center gap-1.5">
+                                                  <span className="text-slate-400">{s.timeDisplay}</span>
+                                                  <span className="text-[10px] text-slate-600">sched</span>
+                                                </div>
+                                                <span className={`font-semibold ${countClass}`}>{countText}</span>
                                               </div>
-                                              <span className="text-slate-400">
-                                                {s.timeMinutes - (new Date().getHours() * 60 + new Date().getMinutes())} min
-                                              </span>
-                                            </div>
-                                          ))}
+                                            );
+                                          })}
                                         </div>
                                       </div>
                                     );
