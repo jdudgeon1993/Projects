@@ -22,40 +22,105 @@ function trainColor(vehicle: LiveVehicle): string {
   return DIRECTION_COLORS[vehicle.directionId ?? 0] ?? DIRECTION_COLORS[0];
 }
 
-/** Build a lookup of stop_id → {lat, lon} from all directions' stop lists. */
-function buildStopCoords(directions: DirectionInfo[]): Map<string, { lat: number; lon: number }> {
-  const map = new Map<string, { lat: number; lon: number }>();
-  for (const dir of directions) {
-    for (const s of dir.stops) {
-      if (!map.has(s.stop_id)) map.set(s.stop_id, { lat: s.stop_lat, lon: s.stop_lon });
-    }
+type Pt = { lat: number; lon: number };
+
+interface RouteGeometry {
+  // Full shape polyline for this direction (may be empty for bus routes without shapes).
+  shape: Pt[];
+  // stopId → index into shape[] of the nearest shape point to that stop.
+  stopShapeIndex: Map<string, number>;
+  // Fallback: stopId → raw coords (used when shape is unavailable).
+  stopCoords: Map<string, Pt>;
+}
+
+function sq(x: number) { return x * x; }
+function dist2(a: Pt, b: Pt) { return sq(a.lat - b.lat) + sq(a.lon - b.lon); }
+
+/** For each stop find the shape point index closest to the stop's coordinates. */
+function nearestShapeIndex(shape: Pt[], stop: Pt): number {
+  let best = 0;
+  let bestD = dist2(shape[0], stop);
+  for (let i = 1; i < shape.length; i++) {
+    const d = dist2(shape[i], stop);
+    if (d < bestD) { bestD = d; best = i; }
   }
-  return map;
+  return best;
 }
 
 /**
- * Given a vehicle and the tripUpdates feed, compute an interpolated lat/lon.
+ * Build per-direction geometry for all loaded directions.
+ * Keyed by directionId.
+ */
+function buildRouteGeometry(directions: DirectionInfo[]): Map<number, RouteGeometry> {
+  const result = new Map<number, RouteGeometry>();
+  for (const dir of directions) {
+    const shape = dir.shape.length > 1 ? dir.shape : [];
+    const stopShapeIndex = new Map<string, number>();
+    const stopCoords = new Map<string, Pt>();
+
+    for (const s of dir.stops) {
+      const pt: Pt = { lat: s.stop_lat, lon: s.stop_lon };
+      stopCoords.set(s.stop_id, pt);
+      if (shape.length > 0) {
+        stopShapeIndex.set(s.stop_id, nearestShapeIndex(shape, pt));
+      }
+    }
+    result.set(dir.directionId, { shape, stopShapeIndex, stopCoords });
+  }
+  return result;
+}
+
+/**
+ * Walk a polyline and return the point at `fraction` (0–1) of its total length.
+ * fraction=0 → first point, fraction=1 → last point.
+ */
+function walkPolyline(pts: Pt[], fraction: number): Pt {
+  if (pts.length === 1) return pts[0];
+  const f = Math.max(0, Math.min(1, fraction));
+
+  // Accumulate segment lengths.
+  const lens: number[] = [0];
+  for (let i = 1; i < pts.length; i++) {
+    lens.push(lens[i - 1] + Math.sqrt(dist2(pts[i], pts[i - 1])));
+  }
+  const total = lens[lens.length - 1];
+  if (total === 0) return pts[0];
+
+  const target = f * total;
+  for (let i = 1; i < pts.length; i++) {
+    if (lens[i] >= target) {
+      const segLen = lens[i] - lens[i - 1];
+      const t = segLen === 0 ? 0 : (target - lens[i - 1]) / segLen;
+      return {
+        lat: pts[i - 1].lat + (pts[i].lat - pts[i - 1].lat) * t,
+        lon: pts[i - 1].lon + (pts[i].lon - pts[i - 1].lon) * t,
+      };
+    }
+  }
+  return pts[pts.length - 1];
+}
+
+/**
+ * Interpolate a vehicle's position along the actual route geometry.
  *
- * Strategy:
- *  - STOPPED_AT / INCOMING_AT: use the raw GPS fix (no interpolation needed).
- *  - IN_TRANSIT_TO: find the vehicle's trip in the TripUpdate feed, locate the
- *    two consecutive stop_time_updates that bracket `now` (prev departed, next
- *    arriving), lerp between their stop coordinates by time fraction.
- *  - Falls back to raw GPS if the trip update is missing or times can't be found.
- *  - Caps extrapolation at 90s beyond the last known fix to avoid wild drift.
+ * For IN_TRANSIT_TO vehicles:
+ *  1. Find the from/to stop pair that brackets `now` in the TripUpdate.
+ *  2. Look up their shape indices and extract that shape segment.
+ *  3. Walk the segment at the time fraction — vehicle follows the real track.
+ *  4. Falls back to straight-line lerp if shape data is unavailable, then to
+ *     raw GPS if stop coordinates can't be found at all.
  */
 function interpolatePosition(
   v: LiveVehicle,
   tripUpdates: ParsedFeed | null,
-  stopCoords: Map<string, { lat: number; lon: number }>,
+  routeGeometry: Map<number, RouteGeometry>,
   nowSec: number,
-): { lat: number; lon: number } | null {
+): Pt | null {
   const rawLat = v.lat;
   const rawLon = v.lon;
-
   if (rawLat == null || rawLon == null) return null;
 
-  // For stopped/incoming, the GPS fix is authoritative — no interpolation.
+  // STOPPED_AT / INCOMING_AT: GPS fix is authoritative.
   if (v.status !== 'IN_TRANSIT_TO') return { lat: rawLat, lon: rawLon };
 
   if (!tripUpdates?.entity || !v.tripId) return { lat: rawLat, lon: rawLon };
@@ -66,8 +131,7 @@ function interpolatePosition(
   const stus: any[] = entity.tripUpdate?.stopTimeUpdate ?? [];
   if (stus.length < 2) return { lat: rawLat, lon: rawLon };
 
-  // Find the pair: last stop whose departure has passed (fromStop) and
-  // the next stop whose arrival is in the future (toStop).
+  // Find the bracketing stop pair: fromStop departed, toStop not yet arrived.
   let fromIdx = -1;
   for (let i = 0; i < stus.length - 1; i++) {
     const depTime = Number(stus[i].departure?.time ?? stus[i].arrival?.time ?? 0);
@@ -77,22 +141,46 @@ function interpolatePosition(
       break;
     }
   }
-
   if (fromIdx === -1) return { lat: rawLat, lon: rawLon };
 
   const fromStu = stus[fromIdx];
   const toStu = stus[fromIdx + 1];
   const depTime = Number(fromStu.departure?.time ?? fromStu.arrival?.time);
   const arrTime = Number(toStu.arrival?.time ?? toStu.departure?.time);
-
   if (!depTime || !arrTime || arrTime <= depTime) return { lat: rawLat, lon: rawLon };
 
-  const fromCoords = fromStu.stopId ? stopCoords.get(fromStu.stopId) : null;
-  const toCoords = toStu.stopId ? stopCoords.get(toStu.stopId) : null;
+  const fraction = Math.max(0, Math.min(1, (nowSec - depTime) / (arrTime - depTime)));
 
+  // Look up geometry for this vehicle's direction.
+  const dirId = v.directionId ?? 0;
+  const geo = routeGeometry.get(dirId);
+  if (!geo) return { lat: rawLat, lon: rawLon };
+
+  const fromStopId: string | undefined = fromStu.stopId;
+  const toStopId: string | undefined = toStu.stopId;
+
+  // Shape-based interpolation: walk the actual route geometry.
+  if (geo.shape.length > 1 && fromStopId && toStopId) {
+    const fromShapeIdx = geo.stopShapeIndex.get(fromStopId);
+    const toShapeIdx = geo.stopShapeIndex.get(toStopId);
+
+    if (fromShapeIdx != null && toShapeIdx != null && fromShapeIdx !== toShapeIdx) {
+      // Extract the segment of the shape between these two stops.
+      // If toShapeIdx < fromShapeIdx the shape direction is reversed — handle both.
+      const lo = Math.min(fromShapeIdx, toShapeIdx);
+      const hi = Math.max(fromShapeIdx, toShapeIdx);
+      let segment = geo.shape.slice(lo, hi + 1);
+      if (fromShapeIdx > toShapeIdx) segment = segment.slice().reverse();
+
+      return walkPolyline(segment, fraction);
+    }
+  }
+
+  // Fallback: straight-line lerp between stop coordinates.
+  const fromCoords = fromStopId ? geo.stopCoords.get(fromStopId) : null;
+  const toCoords = toStopId ? geo.stopCoords.get(toStopId) : null;
   if (!fromCoords || !toCoords) return { lat: rawLat, lon: rawLon };
 
-  const fraction = Math.max(0, Math.min(1, (nowSec - depTime) / (arrTime - depTime)));
   return {
     lat: fromCoords.lat + (toCoords.lat - fromCoords.lat) * fraction,
     lon: fromCoords.lon + (toCoords.lon - fromCoords.lon) * fraction,
@@ -118,13 +206,13 @@ export default function RailLineMap({
   const markerRefs = useRef<Map<string, L.CircleMarker>>(new Map());
   const vehiclesRef = useRef(vehicles);
   const tripUpdatesRef = useRef(tripUpdates);
-  const stopCoordsRef = useRef<Map<string, { lat: number; lon: number }>>(new Map());
+  const routeGeoRef = useRef<Map<number, RouteGeometry>>(new Map());
 
   // Keep refs current so the interval always sees the latest data.
   useEffect(() => { vehiclesRef.current = vehicles; }, [vehicles]);
   useEffect(() => { tripUpdatesRef.current = tripUpdates; }, [tripUpdates]);
   useEffect(() => {
-    stopCoordsRef.current = buildStopCoords(directions);
+    routeGeoRef.current = buildRouteGeometry(directions);
   }, [directions]);
 
   // Endpoints + route lines — only redrawn when the line/direction data changes.
@@ -229,7 +317,7 @@ export default function RailLineMap({
       for (const v of vehiclesRef.current) {
         const marker = markerRefs.current.get(v.id);
         if (!marker) continue;
-        const pos = interpolatePosition(v, tripUpdatesRef.current, stopCoordsRef.current, nowSec);
+        const pos = interpolatePosition(v, tripUpdatesRef.current, routeGeoRef.current, nowSec);
         if (pos) marker.setLatLng([pos.lat, pos.lon]);
       }
     }, 500);
