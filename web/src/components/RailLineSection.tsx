@@ -490,6 +490,7 @@ export default function RailLineSection() {
             vehicles={showRail ? vehicles : []}
             tripUpdates={tripUpdates}
             routeColor={color}
+            routeType={routeType}
             drivingRoute={showDriving ? { points: drivePoints!, origin: driveOrigin!, destination: driveDestPoint! } : null}
           />
         </Suspense>
