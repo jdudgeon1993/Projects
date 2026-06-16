@@ -344,8 +344,11 @@ export async function planChain(
         let boardIdx = -1;
         for (let k = 0; k < trip.length; k++) {
           const row = trip[k];
+          // No origin chosen: only board at the trip's starting terminal (k===0).
+          // This naturally selects the correct direction — trips going away from
+          // the transfer point board at the far terminal and never find a connection.
           const near = isFirst && !originStop
-            ? true // no origin constraint: can board anywhere on the first route
+            ? k === 0
             : row.stop_id === state.stopId ||
               distMeters(row.stop_lat, row.stop_lon, state.lat, state.lon) <= WALK_RADIUS_METERS;
           if (!near) continue;
