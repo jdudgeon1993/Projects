@@ -116,38 +116,46 @@ function computePhase(
   const stoppedVehicle = stopVehicles.find((v) => v.status === 'STOPPED_AT') ?? null;
   const incomingVehicle = stopVehicles.find((v) => v.status === 'INCOMING_AT') ?? null;
 
-  const pool = arrivals.filter((a) => a.time - nowSec > -30);
+  const pool = arrivals.filter((a) => a.time - nowSec > -45);
   const current = pool[0] ?? null;
   const upcoming = pool.slice(1);
 
-  // 1. AT_PLATFORM — physical truth: vehicle is STOPPED_AT this stop
+  // 1. AT_PLATFORM — STOPPED_AT from vehicle feed (physical truth)
   if (stoppedVehicle) {
-    const dep = current?.departureTime ?? null;
-    const depIn = dep != null ? Math.round(dep - nowSec) : null;
-    const sublabel =
-      role === 'destination'
-        ? null
-        : depIn != null && depIn > 5
-          ? `Departs in ${depIn}s`
-          : depIn != null && depIn > 0
-            ? 'Departing soon'
+    // Match departure time to THIS vehicle's trip specifically — not pool[0] which may
+    // have rolled over to the next train after the feed lags post-departure.
+    const matchedArrival = arrivals.find((a) => a.tripId === stoppedVehicle.tripId) ?? null;
+
+    // If arrivals exist but none match this vehicle's trip, the STOPPED_AT is stale
+    // (feed hasn't updated yet after the train left). Fall through to time-based phases.
+    if (arrivals.length > 0 && matchedArrival == null) {
+      // stale vehicle position — skip AT_PLATFORM
+    } else {
+      const dep = matchedArrival?.departureTime ?? null;
+      const depIn = dep != null ? Math.round(dep - nowSec) : null;
+      const sublabel =
+        role === 'destination'
+          ? null
+          : depIn != null && depIn > 0 && depIn <= 90
+            ? depIn > 5 ? `Departs in ${depIn}s` : 'Departing soon'
             : null;
-    return {
-      phase: 'AT_PLATFORM',
-      label: 'At Platform',
-      sublabel,
-      dotClass: 'border-amber-400 bg-amber-400',
-      labelClass: 'text-amber-400',
-      animate: 'pulse',
-      current,
-      upcoming,
-    };
+      return {
+        phase: 'AT_PLATFORM',
+        label: 'At Platform',
+        sublabel,
+        dotClass: 'border-amber-400 bg-amber-400',
+        labelClass: 'text-amber-400',
+        animate: 'pulse',
+        current: matchedArrival ?? current,
+        upcoming,
+      };
+    }
   }
 
-  // 2. DEPARTING / ARRIVED — departure time just passed
+  // 2. DEPARTING / ARRIVED — departure time just passed (35s window covers feed lag)
   if (current?.departureTime != null) {
     const secsSinceDep = nowSec - current.departureTime;
-    if (secsSinceDep >= 0 && secsSinceDep < 20) {
+    if (secsSinceDep >= 0 && secsSinceDep < 35) {
       if (role === 'destination') {
         return { phase: 'ARRIVED', label: 'Arrived', sublabel: null, dotClass: 'border-emerald-500 bg-emerald-500/20', labelClass: 'text-emerald-400', animate: 'pulse', current, upcoming };
       }
@@ -163,7 +171,7 @@ function computePhase(
     return { phase: 'DEPARTED', label: 'Departed', sublabel: null, dotClass: 'border-slate-500 bg-slate-700', labelClass: 'text-slate-500', animate: 'none', current: upcoming[0] ?? null, upcoming: upcoming.slice(1) };
   }
 
-  // No live data at all
+  // No live data
   if (!current) {
     if (scheduledTime) {
       return { phase: 'SCHEDULED', label: scheduledTime, sublabel: role === 'origin' ? 'Departs' : 'Arrives', dotClass: 'border-slate-600 bg-slate-800', labelClass: 'text-slate-500', animate: 'none', current: null, upcoming: [] };
@@ -173,7 +181,7 @@ function computePhase(
 
   const diff = current.time - nowSec;
 
-  // 4. INCOMING — physical truth: vehicle INCOMING_AT this stop
+  // 4. INCOMING — INCOMING_AT from vehicle feed (physical truth)
   if (incomingVehicle) {
     const label = role === 'origin' ? 'Departing soon' : 'Arriving soon';
     return { phase: 'INCOMING', label, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400/40', labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
