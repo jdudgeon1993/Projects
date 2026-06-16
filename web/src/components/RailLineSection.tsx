@@ -108,10 +108,12 @@ interface PhaseInfo {
   upcoming: UpcomingArrival[];
 }
 
+type StopRole = 'origin' | 'destination' | 'middle';
+
 function computeStopPhase(
   arrivals: UpcomingArrival[],
   nowSec: number,
-  isTerminal: boolean,
+  role: StopRole,
 ): PhaseInfo {
   const dwelling = arrivals.find((a) => {
     const dep = a.departureTime ?? a.time;
@@ -124,12 +126,19 @@ function computeStopPhase(
   const current = pool[0] ?? null;
   const rest = pool.slice(1);
 
+  // --- Dwelling (vehicle at this stop right now) ---
   if (dwelling && !dwellingDeparted) {
     const dep = dwelling.departureTime ?? dwelling.time;
     const depIn = Math.round(dep - nowSec);
-    const sublabel = depIn > 5 ? `Departs in ${depIn}s` : 'Departing soon';
+    // Destination: train is arriving, not departing — no depart sublabel
+    const sublabel =
+      role === 'destination'
+        ? null
+        : depIn > 5
+          ? `Departs in ${depIn}s`
+          : 'Departing soon';
     return {
-      label: isTerminal ? 'At Platform' : 'Arrived',
+      label: 'At Platform',
       sublabel,
       dotClass: 'border-amber-400 bg-amber-400',
       labelClass: 'text-amber-400',
@@ -139,15 +148,17 @@ function computeStopPhase(
     };
   }
 
+  // --- Just left the stop ---
   if (dwelling && dwellingDeparted) {
     const dep = Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
     const secsSince = nowSec - dep;
     if (secsSince < 10) {
+      // Destination: the trip ends here, say "Arrived" not "Departing"
       return {
-        label: 'Departing',
+        label: role === 'destination' ? 'Arrived' : 'Departing',
         sublabel: null,
-        dotClass: 'border-amber-500 bg-amber-500/30',
-        labelClass: 'text-amber-400',
+        dotClass: role === 'destination' ? 'border-emerald-500 bg-emerald-500/30' : 'border-amber-500 bg-amber-500/30',
+        labelClass: role === 'destination' ? 'text-emerald-400' : 'text-amber-400',
         animate: 'pulse',
         current: dwelling,
         upcoming: rest,
@@ -155,10 +166,10 @@ function computeStopPhase(
     }
     if (secsSince < 25) {
       return {
-        label: 'Departed',
+        label: role === 'destination' ? 'Arrived' : 'Departed',
         sublabel: null,
-        dotClass: 'border-slate-500 bg-slate-700',
-        labelClass: 'text-slate-500',
+        dotClass: role === 'destination' ? 'border-emerald-700 bg-emerald-900/40' : 'border-slate-500 bg-slate-700',
+        labelClass: role === 'destination' ? 'text-emerald-600' : 'text-slate-500',
         animate: 'none',
         current: rest[0] ?? null,
         upcoming: rest.slice(1),
@@ -180,20 +191,25 @@ function computeStopPhase(
 
   const diff = current.time - nowSec;
 
+  // --- Pre-arrival phases ---
+
   if (diff <= 0) {
+    // Missed/just passed — for destination this reads as "Arrived"
     return {
-      label: 'Departed',
+      label: role === 'destination' ? 'Arrived' : 'Departed',
       sublabel: null,
-      dotClass: 'border-slate-500 bg-slate-700',
-      labelClass: 'text-slate-500',
+      dotClass: role === 'destination' ? 'border-emerald-700 bg-emerald-900/40' : 'border-slate-500 bg-slate-700',
+      labelClass: role === 'destination' ? 'text-emerald-600' : 'text-slate-500',
       animate: 'none',
       current: rest[0] ?? null,
       upcoming: rest.slice(1),
     };
   }
+
+  // Origin: about to depart — say "Departing" not "Arriving"
   if (diff <= 7) {
     return {
-      label: 'Arriving',
+      label: role === 'origin' ? 'Departing' : 'Arriving',
       sublabel: formatClockTime(current.time),
       dotClass: 'border-red-400 bg-red-400',
       labelClass: 'text-red-400',
@@ -204,7 +220,7 @@ function computeStopPhase(
   }
   if (diff <= 30) {
     return {
-      label: 'Arriving soon',
+      label: role === 'origin' ? 'Departing soon' : 'Arriving soon',
       sublabel: formatClockTime(current.time),
       dotClass: 'border-red-400 bg-red-400/40',
       labelClass: 'text-red-400',
@@ -947,10 +963,10 @@ export default function RailLineSection() {
                   const scheduled = formatScheduledTime(stop.departure_time ?? stop.arrival_time);
 
                   const nowSec = now / 1000;
-                  const isTerminal = idx === 0 || idx === dir.stops.length - 1;
+                  const role: StopRole = idx === 0 ? 'origin' : idx === dir.stops.length - 1 ? 'destination' : 'middle';
                   const phase = isSkipped
                     ? null
-                    : computeStopPhase(arrivals, nowSec, isTerminal);
+                    : computeStopPhase(arrivals, nowSec, role);
 
                   const matched = phase?.current ? vehicleByTripId[phase.current.tripId] : undefined;
                   const vIdx = matched?.stopId != null ? stopIndexById.get(matched.stopId) : undefined;
