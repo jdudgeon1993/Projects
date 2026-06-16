@@ -205,6 +205,7 @@ function RouteFinder({ onPick }: { onPick: (shortName: string) => void }) {
 export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed | null }) {
   const [allLines, setAllLines] = useState<RailLineOption[]>([]);
   const [chain, setChain] = useState<string[]>([]);
+  const [showRoutePicker, setShowRoutePicker] = useState(false);
   const [routeQuery, setRouteQuery] = useState('');
   const [savedTrips, setSavedTrips] = useState<SavedTrip[]>(loadSavedTrips);
   const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
@@ -295,21 +296,21 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
 
   const exitOverview = lastRoute === firstRoute ? firstOverview : lastOverview;
 
-  const routeSuggestions =
-    routeQuery.trim().length > 0
-      ? allLines
-          .filter(
-            (l) =>
-              !chain.includes(l.shortName) &&
-              (l.shortName.toLowerCase().startsWith(routeQuery.trim().toLowerCase()) ||
-                l.longName?.toLowerCase().includes(routeQuery.trim().toLowerCase())),
-          )
-          .slice(0, 6)
-      : [];
+  const q = routeQuery.trim().toLowerCase();
+  const filteredForPicker = q.length > 0
+    ? allLines.filter(
+        (l) => !chain.includes(l.shortName) &&
+          (l.shortName.toLowerCase().includes(q) || l.longName?.toLowerCase().includes(q)),
+      )
+    : allLines.filter((l) => !chain.includes(l.shortName));
+
+  const pickerRail = filteredForPicker.filter((l) => l.routeType === 0 || l.routeType === 1 || l.routeType === 2);
+  const pickerBus = filteredForPicker.filter((l) => l.routeType === 3).slice(0, 30);
 
   function addRoute(shortName: string) {
     setChain((prev) => (prev.includes(shortName) || prev.length >= 5 ? prev : [...prev, shortName]));
     setRouteQuery('');
+    setShowRoutePicker(false);
   }
 
   async function plan() {
@@ -439,27 +440,71 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
             </button>
           )}
           {chain.length < 5 && (
+            <button
+              type="button"
+              onClick={() => { setShowRoutePicker((v) => !v); setRouteQuery(''); }}
+              className="rounded-full border border-slate-700 bg-slate-800 px-3 py-0.5 text-xs text-sky-300 hover:border-sky-500"
+            >
+              + Add route
+            </button>
+          )}
+        </div>
+
+        {/* Route picker panel */}
+        {showRoutePicker && (
+          <div className="mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3">
             <input
               type="text"
               value={routeQuery}
               onChange={(e) => setRouteQuery(e.target.value)}
-              placeholder={chain.length === 0 ? 'Add route (e.g. 120L)…' : 'Add another…'}
-              className="w-36 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-200 placeholder:text-slate-500"
+              placeholder="Search by name or number…"
+              autoFocus
+              className="mb-3 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-200 placeholder:text-slate-500"
             />
-          )}
-        </div>
-        {routeSuggestions.length > 0 && (
-          <div className="absolute z-10 mt-1 max-h-48 w-72 overflow-y-auto rounded border border-slate-700 bg-slate-800 shadow-lg">
-            {routeSuggestions.map((l) => (
-              <button
-                key={l.shortName}
-                type="button"
-                onClick={() => addRoute(l.shortName)}
-                className="block w-full truncate px-2 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-700"
-              >
-                {l.shortName} — {l.longName}
-              </button>
-            ))}
+
+            {pickerRail.length > 0 && (
+              <div className="mb-3">
+                <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Rail &amp; Light Rail</p>
+                <div className="flex flex-wrap gap-2">
+                  {pickerRail.map((l) => (
+                    <button
+                      key={l.shortName}
+                      type="button"
+                      onClick={() => addRoute(l.shortName)}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 hover:border-sky-500 hover:bg-slate-700"
+                      title={l.longName ?? l.shortName}
+                    >
+                      <RouteBadge name={l.shortName} color={l.color} />
+                      <span className="max-w-[120px] truncate">{l.longName ?? l.shortName}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {pickerBus.length > 0 && (
+              <div>
+                <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Bus</p>
+                <div className="flex flex-wrap gap-2">
+                  {pickerBus.map((l) => (
+                    <button
+                      key={l.shortName}
+                      type="button"
+                      onClick={() => addRoute(l.shortName)}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 hover:border-sky-500 hover:bg-slate-700"
+                      title={l.longName ?? l.shortName}
+                    >
+                      <RouteBadge name={l.shortName} color={l.color} />
+                      <span className="max-w-[120px] truncate">{l.longName ?? l.shortName}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {pickerRail.length === 0 && pickerBus.length === 0 && (
+              <p className="text-xs text-slate-500">No routes match "{routeQuery}"</p>
+            )}
           </div>
         )}
       </div>

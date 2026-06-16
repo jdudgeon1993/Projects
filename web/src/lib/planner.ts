@@ -485,13 +485,27 @@ export async function planChain(
       ),
   );
 
-  // Dedupe on full leg signature.
+  // Dedupe on full leg signature, then collapse itineraries whose first leg
+  // departs within 3 minutes of another on the same route from the same stop —
+  // these are usually duplicate trips (same route, different sub-variant).
   const seenKeys = new Set<string>();
   const dedup: Itinerary[] = [];
   for (const it of nonDominated) {
     const key = it.legs.map((l) => `${l.routeShortName}@${l.boardTime}>${l.alightTime}@${l.alightStopName}`).join('|');
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
+
+    const first = it.legs[0];
+    const dep = gtfsTimeToMinutes(first.boardTime) ?? 0;
+    const tooClose = dedup.some((existing) => {
+      const ef = existing.legs[0];
+      if (ef.routeShortName !== first.routeShortName) return false;
+      if (ef.boardStopName !== first.boardStopName) return false;
+      const ed = gtfsTimeToMinutes(ef.boardTime) ?? 0;
+      return Math.abs(dep - ed) <= 3;
+    });
+    if (tooClose) continue;
+
     dedup.push(it);
   }
 
