@@ -187,15 +187,53 @@ export interface RouteAtStop {
   color: string | null;
 }
 
-/** All routes whose imported trips serve the given stop (two-step query — avoids large joined row sets). */
-export async function getRoutesServingStop(stopId: string): Promise<RouteAtStop[]> {
-  if (!supabase) return [];
+export interface RoutesAtStopResult {
+  routes: RouteAtStop[];
+  stopIds: string[]; // tapped stop + all nearby stop IDs found
+}
+
+/** All routes whose imported trips serve the given stop or any stop within radiusMeters. */
+export async function getRoutesServingStop(stopId: string, radiusMeters = 250): Promise<RoutesAtStopResult> {
+  if (!supabase) return { routes: [], stopIds: [stopId] };
+
+  // Step 1: get the tapped stop's coordinates
+  const { data: origin } = await supabase
+    .from('rtd_stops')
+    .select('stop_lat, stop_lon')
+    .eq('stop_id', stopId)
+    .single();
+  if (!origin) return { routes: [], stopIds: [stopId] };
+
+  const lat = Number(origin.stop_lat);
+  const lon = Number(origin.stop_lon);
+
+  // Step 2: bounding box of nearby stops (lat/lon degrees ≈ metres at Denver's latitude)
+  const latD = radiusMeters / 111000;
+  const lonD = radiusMeters / (111000 * Math.cos((lat * Math.PI) / 180));
+  const { data: nearbyRows } = await supabase
+    .from('rtd_stops')
+    .select('stop_id, stop_lat, stop_lon')
+    .gte('stop_lat', lat - latD)
+    .lte('stop_lat', lat + latD)
+    .gte('stop_lon', lon - lonD)
+    .lte('stop_lon', lon + lonD);
+
+  // Exact haversine filter to stay within circle, not just bounding box
+  const nearbyStopIds = [
+    stopId,
+    ...((nearbyRows ?? []) as any[])
+      .filter((s) => distanceMeters(lat, lon, Number(s.stop_lat), Number(s.stop_lon)) <= radiusMeters)
+      .map((s) => s.stop_id as string),
+  ];
+  const allStopIds = [...new Set(nearbyStopIds)];
+
+  // Step 3: trips serving any of these stops
   const { data: stRows, error: stErr } = await supabase
     .from('rtd_stop_times')
     .select('trip_id')
-    .eq('stop_id', stopId)
-    .limit(1000);
-  if (stErr || !stRows || stRows.length === 0) return [];
+    .in('stop_id', allStopIds)
+    .limit(2000);
+  if (stErr || !stRows || stRows.length === 0) return { routes: [], stopIds: allStopIds };
   const tripIds = [...new Set(stRows.map((r: any) => r.trip_id))];
 
   const routeIds = new Set<string>();
@@ -206,23 +244,26 @@ export async function getRoutesServingStop(stopId: string): Promise<RouteAtStop[
       .in('trip_id', tripIds.slice(i, i + 100));
     for (const t of (trips ?? []) as any[]) routeIds.add(t.route_id);
   }
-  if (routeIds.size === 0) return [];
+  if (routeIds.size === 0) return { routes: [], stopIds: allStopIds };
 
   const { data: routes, error: rErr } = await supabase
     .from('rtd_routes')
     .select('route_id, route_short_name, route_long_name, route_type, route_color')
     .in('route_id', [...routeIds]);
-  if (rErr || !routes) return [];
+  if (rErr || !routes) return { routes: [], stopIds: allStopIds };
 
-  return routes
-    .map((r: any) => ({
-      routeId: r.route_id,
-      shortName: r.route_short_name,
-      longName: r.route_long_name,
-      routeType: Number(r.route_type),
-      color: r.route_color ? `#${r.route_color}` : null,
-    }))
-    .sort((a, b) => a.shortName.localeCompare(b.shortName));
+  return {
+    routes: routes
+      .map((r: any) => ({
+        routeId: r.route_id,
+        shortName: r.route_short_name,
+        longName: r.route_long_name,
+        routeType: Number(r.route_type),
+        color: r.route_color ? `#${r.route_color}` : null,
+      }))
+      .sort((a, b) => a.routeType - b.routeType || a.shortName.localeCompare(b.shortName)),
+    stopIds: allStopIds,
+  };
 }
 
 export interface StopSearchResult {
@@ -461,17 +502,18 @@ export interface ScheduledArrival {
  * Used as a fallback when live GTFS-RT data is missing for a connecting route.
  */
 export async function getNextScheduledDepartures(
-  stopId: string,
+  stopIds: string | string[],
   routeShortNames: string[],
   nowMinutes: number,
   countPerRoute = 3,
 ): Promise<Map<string, ScheduledArrival[]>> {
   if (!supabase || routeShortNames.length === 0) return new Map();
+  const ids = Array.isArray(stopIds) ? stopIds : [stopIds];
   const { data, error } = await supabase
     .from('rtd_stop_times')
     .select('departure_time, arrival_time, rtd_trips(direction_id, rtd_routes(route_short_name))')
-    .eq('stop_id', stopId)
-    .limit(2000);
+    .in('stop_id', ids)
+    .limit(5000);
   if (error || !data) return new Map();
 
   const nameSet = new Set(routeShortNames);

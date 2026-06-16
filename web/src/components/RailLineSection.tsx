@@ -318,19 +318,23 @@ export default function RailLineSection() {
   const [selectedStop, setSelectedStop] = useState<{ stopId: string; stopName: string } | null>(null);
   const [vehiclesExpanded, setVehiclesExpanded] = useState(false);
   const [stopRoutes, setStopRoutes] = useState<RouteAtStop[] | null>(null);
+  const [stopNearbyIds, setStopNearbyIds] = useState<string[]>([]);
   useEffect(() => {
     if (!selectedStop) {
       setStopRoutes(null);
+      setStopNearbyIds([]);
       return;
     }
     let cancelled = false;
     setStopRoutes(null);
-    getRoutesServingStop(selectedStop.stopId).then((r) => {
-      if (!cancelled) setStopRoutes(r);
+    setStopNearbyIds([]);
+    getRoutesServingStop(selectedStop.stopId).then((result) => {
+      if (!cancelled) {
+        setStopRoutes(result.routes);
+        setStopNearbyIds(result.stopIds);
+      }
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [selectedStop?.stopId]);
 
   const [stopScheduled, setStopScheduled] = useState<Map<string, ScheduledArrival[]> | null>(null);
@@ -339,11 +343,13 @@ export default function RailLineSection() {
     let cancelled = false;
     setStopScheduled(null);
     const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
-    getNextScheduledDepartures(selectedStop.stopId, stopRoutes.map((r) => r.shortName), nowMins).then((result) => {
+    // Use all nearby stop IDs so buses and trains at the same hub all show times
+    const queryStopIds = stopNearbyIds.length > 0 ? stopNearbyIds : [selectedStop.stopId];
+    getNextScheduledDepartures(queryStopIds, stopRoutes.map((r) => r.shortName), nowMins).then((result) => {
       if (!cancelled) setStopScheduled(result);
     });
     return () => { cancelled = true; };
-  }, [selectedStop?.stopId, stopRoutes]);
+  }, [selectedStop?.stopId, stopRoutes, stopNearbyIds]);
 
   const [now, setNow] = useState(() => Date.now());
 

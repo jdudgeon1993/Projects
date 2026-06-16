@@ -138,7 +138,7 @@ function RouteFinder({ onPick }: { onPick: (shortName: string) => void }) {
     let cancelled = false;
     setRoutes(null);
     getRoutesServingStop(picked.stopId).then((r) => {
-      if (!cancelled) setRoutes(r);
+      if (!cancelled) setRoutes(r.routes);
     });
     return () => {
       cancelled = true;
