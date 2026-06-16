@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
-import { useRailLine } from '../lib/useRailLine';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { useRailLine, type LiveVehicle } from '../lib/useRailLine';
 import { getRailLines, getNearestRoutes, getRoutesServingStop, getNextScheduledDepartures, routeTypeLabel, type RailLineOption, type NearbyRoute, type RouteAtStop, type ScheduledArrival } from '../lib/schedule';
 import { getArrivalsForStop, getActiveAlerts, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
 import { getDrivingRoute, type DrivingRoute } from '../lib/api';
@@ -87,18 +87,16 @@ function formatClockTime(unixSeconds: number): string {
 }
 
 
-/** Unified countdown text + color class for a single arrival, used in all panels. */
-function countdownLabel(diffSec: number): { text: string; cls: string } {
-  if (diffSec <= 0) return { text: 'Departed', cls: 'text-slate-500' };
-  if (diffSec <= 7) return { text: 'Arriving', cls: 'text-red-400 animate-pulse' };
-  if (diffSec <= 30) return { text: 'Arriving soon', cls: 'text-red-400 animate-pulse' };
-  if (diffSec <= 60) return { text: `:${String(Math.ceil(diffSec)).padStart(2, '0')}`, cls: 'text-red-400 animate-bounce' };
-  if (diffSec <= 180) return { text: `${Math.ceil(diffSec / 60)} min`, cls: 'text-yellow-400' };
-  if (diffSec <= 300) return { text: `${Math.ceil(diffSec / 60)} min`, cls: 'text-yellow-400/60' };
-  return { text: `${Math.round(diffSec / 60)} min`, cls: 'text-sky-400' };
-}
+type StopRole = 'origin' | 'destination' | 'middle';
+
+type PhaseName =
+  | 'SKIPPED' | 'AT_PLATFORM' | 'DEPARTING' | 'DEPARTED'
+  | 'ARRIVED' | 'INCOMING' | 'ARRIVING'
+  | 'SECONDS' | 'MINUTES_CLOSE' | 'MINUTES_MID' | 'MINUTES_FAR'
+  | 'SCHEDULED' | 'NONE';
 
 interface PhaseInfo {
+  phase: PhaseName;
   label: string;
   sublabel: string | null;
   dotClass: string;
@@ -108,171 +106,106 @@ interface PhaseInfo {
   upcoming: UpcomingArrival[];
 }
 
-type StopRole = 'origin' | 'destination' | 'middle';
-
-function computeStopPhase(
+function computePhase(
   arrivals: UpcomingArrival[],
+  stopVehicles: LiveVehicle[],
   nowSec: number,
   role: StopRole,
+  scheduledTime: string | null,
 ): PhaseInfo {
-  const dwelling = arrivals.find((a) => {
-    const dep = a.departureTime ?? a.time;
-    return nowSec >= a.time - 5 && nowSec < Math.max(dep, a.time + 15) + 5;
-  });
-  const dwellingDeparted =
-    dwelling != null && nowSec >= Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
+  const stoppedVehicle = stopVehicles.find((v) => v.status === 'STOPPED_AT') ?? null;
+  const incomingVehicle = stopVehicles.find((v) => v.status === 'INCOMING_AT') ?? null;
 
-  const pool = arrivals.filter((a) => a.time - nowSec > -25);
+  const pool = arrivals.filter((a) => a.time - nowSec > -30);
   const current = pool[0] ?? null;
-  const rest = pool.slice(1);
+  const upcoming = pool.slice(1);
 
-  // --- Dwelling (vehicle at this stop right now) ---
-  if (dwelling && !dwellingDeparted) {
-    const dep = dwelling.departureTime ?? dwelling.time;
-    const depIn = Math.round(dep - nowSec);
-    // Destination: train is arriving, not departing — no depart sublabel
+  // 1. AT_PLATFORM — physical truth: vehicle is STOPPED_AT this stop
+  if (stoppedVehicle) {
+    const dep = current?.departureTime ?? null;
+    const depIn = dep != null ? Math.round(dep - nowSec) : null;
     const sublabel =
       role === 'destination'
         ? null
-        : depIn > 5
+        : depIn != null && depIn > 5
           ? `Departs in ${depIn}s`
-          : 'Departing soon';
+          : depIn != null && depIn > 0
+            ? 'Departing soon'
+            : null;
     return {
+      phase: 'AT_PLATFORM',
       label: 'At Platform',
       sublabel,
       dotClass: 'border-amber-400 bg-amber-400',
       labelClass: 'text-amber-400',
       animate: 'pulse',
-      current: dwelling,
-      upcoming: rest,
+      current,
+      upcoming,
     };
   }
 
-  // --- Just left the stop ---
-  if (dwelling && dwellingDeparted) {
-    const dep = Math.max(dwelling.departureTime ?? dwelling.time, dwelling.time);
-    const secsSince = nowSec - dep;
-    if (secsSince < 10) {
-      // Destination: the trip ends here, say "Arrived" not "Departing"
-      return {
-        label: role === 'destination' ? 'Arrived' : 'Departing',
-        sublabel: null,
-        dotClass: role === 'destination' ? 'border-emerald-500 bg-emerald-500/30' : 'border-amber-500 bg-amber-500/30',
-        labelClass: role === 'destination' ? 'text-emerald-400' : 'text-amber-400',
-        animate: 'pulse',
-        current: dwelling,
-        upcoming: rest,
-      };
-    }
-    if (secsSince < 25) {
-      return {
-        label: role === 'destination' ? 'Arrived' : 'Departed',
-        sublabel: null,
-        dotClass: role === 'destination' ? 'border-emerald-700 bg-emerald-900/40' : 'border-slate-500 bg-slate-700',
-        labelClass: role === 'destination' ? 'text-emerald-600' : 'text-slate-500',
-        animate: 'none',
-        current: rest[0] ?? null,
-        upcoming: rest.slice(1),
-      };
+  // 2. DEPARTING / ARRIVED — departure time just passed
+  if (current?.departureTime != null) {
+    const secsSinceDep = nowSec - current.departureTime;
+    if (secsSinceDep >= 0 && secsSinceDep < 20) {
+      if (role === 'destination') {
+        return { phase: 'ARRIVED', label: 'Arrived', sublabel: null, dotClass: 'border-emerald-500 bg-emerald-500/20', labelClass: 'text-emerald-400', animate: 'pulse', current, upcoming };
+      }
+      return { phase: 'DEPARTING', label: 'Departing', sublabel: null, dotClass: 'border-amber-500 bg-amber-500/30', labelClass: 'text-amber-400', animate: 'pulse', current, upcoming };
     }
   }
 
+  // 3. DEPARTED / ARRIVED — arrival time passed
+  if (current && current.time - nowSec <= 0) {
+    if (role === 'destination') {
+      return { phase: 'ARRIVED', label: 'Arrived', sublabel: null, dotClass: 'border-emerald-700 bg-slate-800', labelClass: 'text-emerald-600', animate: 'none', current: upcoming[0] ?? null, upcoming: upcoming.slice(1) };
+    }
+    return { phase: 'DEPARTED', label: 'Departed', sublabel: null, dotClass: 'border-slate-500 bg-slate-700', labelClass: 'text-slate-500', animate: 'none', current: upcoming[0] ?? null, upcoming: upcoming.slice(1) };
+  }
+
+  // No live data at all
   if (!current) {
-    return {
-      label: '—',
-      sublabel: null,
-      dotClass: 'border-slate-700 bg-slate-800',
-      labelClass: 'text-slate-700',
-      animate: 'none',
-      current: null,
-      upcoming: [],
-    };
+    if (scheduledTime) {
+      return { phase: 'SCHEDULED', label: scheduledTime, sublabel: role === 'origin' ? 'Departs' : 'Arrives', dotClass: 'border-slate-600 bg-slate-800', labelClass: 'text-slate-500', animate: 'none', current: null, upcoming: [] };
+    }
+    return { phase: 'NONE', label: '—', sublabel: null, dotClass: 'border-slate-700 bg-slate-800', labelClass: 'text-slate-700', animate: 'none', current: null, upcoming: [] };
   }
 
   const diff = current.time - nowSec;
 
-  // --- Pre-arrival phases ---
-
-  if (diff <= 0) {
-    // Missed/just passed — for destination this reads as "Arrived"
-    return {
-      label: role === 'destination' ? 'Arrived' : 'Departed',
-      sublabel: null,
-      dotClass: role === 'destination' ? 'border-emerald-700 bg-emerald-900/40' : 'border-slate-500 bg-slate-700',
-      labelClass: role === 'destination' ? 'text-emerald-600' : 'text-slate-500',
-      animate: 'none',
-      current: rest[0] ?? null,
-      upcoming: rest.slice(1),
-    };
+  // 4. INCOMING — physical truth: vehicle INCOMING_AT this stop
+  if (incomingVehicle) {
+    const label = role === 'origin' ? 'Departing soon' : 'Arriving soon';
+    return { phase: 'INCOMING', label, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400/40', labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
   }
 
-  // Origin: about to depart — say "Departing" not "Arriving"
-  if (diff <= 7) {
-    return {
-      label: role === 'origin' ? 'Departing' : 'Arriving',
-      sublabel: formatClockTime(current.time),
-      dotClass: 'border-red-400 bg-red-400',
-      labelClass: 'text-red-400',
-      animate: 'pulse',
-      current,
-      upcoming: rest,
-    };
-  }
+  // 5. ARRIVING — time-based close approach
   if (diff <= 30) {
-    return {
-      label: role === 'origin' ? 'Departing soon' : 'Arriving soon',
-      sublabel: formatClockTime(current.time),
-      dotClass: 'border-red-400 bg-red-400/40',
-      labelClass: 'text-red-400',
-      animate: 'pulse',
-      current,
-      upcoming: rest,
-    };
+    const label =
+      role === 'origin'
+        ? diff <= 7 ? 'Departing' : 'Departing soon'
+        : diff <= 7 ? 'Arriving' : 'Arriving soon';
+    const dotClass = diff <= 7 ? 'border-red-400 bg-red-400' : 'border-red-400 bg-red-400/40';
+    return { phase: 'ARRIVING', label, sublabel: formatClockTime(current.time), dotClass, labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
   }
+
+  // 6. SECONDS countdown
   if (diff <= 60) {
-    const secs = Math.ceil(diff);
-    return {
-      label: `:${String(secs).padStart(2, '0')}`,
-      sublabel: formatClockTime(current.time),
-      dotClass: 'border-red-400 bg-red-400/20',
-      labelClass: 'text-red-400',
-      animate: 'bounce',
-      current,
-      upcoming: rest,
-    };
+    return { phase: 'SECONDS', label: `:${String(Math.ceil(diff)).padStart(2, '0')}`, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400/20', labelClass: 'text-red-400', animate: 'bounce', current, upcoming };
   }
+
+  // 7. MINUTES_CLOSE (1–3 min)
   if (diff <= 180) {
-    return {
-      label: `${Math.ceil(diff / 60)} min`,
-      sublabel: formatClockTime(current.time),
-      dotClass: 'border-yellow-400 bg-yellow-400/20',
-      labelClass: 'text-yellow-400',
-      animate: 'pulse',
-      current,
-      upcoming: rest,
-    };
+    return { phase: 'MINUTES_CLOSE', label: `${Math.ceil(diff / 60)} min`, sublabel: formatClockTime(current.time), dotClass: 'border-yellow-400 bg-yellow-400/20', labelClass: 'text-yellow-400', animate: 'pulse', current, upcoming };
   }
+
+  // 8. MINUTES_MID (3–5 min)
   if (diff <= 300) {
-    return {
-      label: `${Math.ceil(diff / 60)} min`,
-      sublabel: formatClockTime(current.time),
-      dotClass: 'border-yellow-400 bg-yellow-400/10',
-      labelClass: 'text-yellow-400',
-      animate: 'none',
-      current,
-      upcoming: rest,
-    };
+    return { phase: 'MINUTES_MID', label: `${Math.ceil(diff / 60)} min`, sublabel: formatClockTime(current.time), dotClass: 'border-yellow-400 bg-yellow-400/10', labelClass: 'text-yellow-400', animate: 'none', current, upcoming };
   }
-  const mins = Math.round(diff / 60);
-  return {
-    label: `${mins} min`,
-    sublabel: formatClockTime(current.time),
-    dotClass: 'border-sky-500/40 bg-slate-800',
-    labelClass: 'text-sky-400',
-    animate: 'none',
-    current,
-    upcoming: rest,
-  };
+
+  // 9. MINUTES_FAR (5+ min)
+  return { phase: 'MINUTES_FAR', label: `${Math.round(diff / 60)} min`, sublabel: formatClockTime(current.time), dotClass: 'border-sky-500/40 bg-slate-800', labelClass: 'text-sky-400', animate: 'none', current, upcoming };
 }
 
 /** Destination input + result, shared between the empty-map state and the Directions tab. */
@@ -339,6 +272,15 @@ export default function RailLineSection() {
   const [lines, setLines] = useState<RailLineOption[]>([]);
   const { directions, arrivalsByStop, skippedStops, vehicleByTripId, vehicles, routeType, color, fare, transfersByStop, serviceToday, tripUpdates, alerts, lastUpdated, loading, error } =
     useRailLine(shortName);
+
+  const vehiclesByStop = useMemo(() => {
+    const map: Record<string, LiveVehicle[]> = {};
+    for (const v of vehicles) {
+      if (v.stopId) (map[v.stopId] ??= []).push(v);
+    }
+    return map;
+  }, [vehicles]);
+
   const [selectedVehicleStop, setSelectedVehicleStop] = useState<string | null>(null);
   const activeAlerts: ServiceAlert[] = getActiveAlerts(alerts);
   const [savedTrips] = useState<SavedTrip[]>(loadSavedTrips);
@@ -954,7 +896,6 @@ export default function RailLineSection() {
               <div className="absolute bottom-2 left-[7px] top-2 w-0.5 rounded-full" style={{ backgroundColor: `${lineColor}55` }} />
               <div className="space-y-3">
                 {(() => {
-                  const stopIndexById = new Map(dir.stops.map((s, i) => [s.stop_id, i]));
                   return dir.stops.map((stop, idx) => {
                   const arrivals = arrivalsByStop[`${stop.stop_id}|${dir.directionId}`] ?? [];
                   const stopLabel = idx === 0 ? 'Departs' : 'Arrives';
@@ -964,43 +905,32 @@ export default function RailLineSection() {
 
                   const nowSec = now / 1000;
                   const role: StopRole = idx === 0 ? 'origin' : idx === dir.stops.length - 1 ? 'destination' : 'middle';
+                  const stopVehicles = vehiclesByStop[stop.stop_id] ?? [];
                   const phase = isSkipped
-                    ? null
-                    : computeStopPhase(arrivals, nowSec, role);
+                    ? ({ phase: 'SKIPPED', label: 'Skipped', sublabel: null, dotClass: 'border-red-500 bg-red-500/30', labelClass: 'text-red-400', animate: 'none', current: null, upcoming: [] } as PhaseInfo)
+                    : computePhase(arrivals, stopVehicles, nowSec, role, scheduled);
 
                   const matched = phase?.current ? vehicleByTripId[phase.current.tripId] : undefined;
-                  const vIdx = matched?.stopId != null ? stopIndexById.get(matched.stopId) : undefined;
-                  const trainApproaching = matched != null && vIdx != null && vIdx < idx && matched.status === 'IN_TRANSIT_TO';
-                  const trainHere = phase != null && (phase.label === 'Arrived' || phase.label === 'At Platform' || phase.label === 'Departing');
+                  const trainHere = stopVehicles.some((v) => v.status === 'STOPPED_AT');
+                  const trainApproaching = !trainHere && stopVehicles.some((v) => v.status === 'IN_TRANSIT_TO' || v.status === 'INCOMING_AT');
 
-                  const dotClasses = isSkipped
-                    ? 'border-red-500 bg-red-500/30'
-                    : phase?.dotClass ?? 'border-slate-700 bg-slate-800';
+                  const dotClasses = phase.dotClass;
 
                   let statusNode: React.ReactNode = null;
                   let timeMain: React.ReactNode;
                   let timeSub: string | null = null;
 
-                  if (isSkipped) {
-                    statusNode = <span className="text-xs font-semibold uppercase tracking-wide text-red-400">Skipping</span>;
-                    timeMain = '—';
-                  } else if (phase) {
-                    statusNode = (
-                      <span className={`text-xs font-semibold uppercase tracking-wide ${phase.labelClass} ${phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
-                        {phase.label}
-                      </span>
-                    );
-                    timeMain = (
-                      <span className={`text-base font-bold ${phase.labelClass} ${phase.animate === 'bounce' ? 'animate-bounce' : phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
-                        {phase.label}
-                      </span>
-                    );
-                    timeSub = phase.sublabel ? `${phase.sublabel} · ${stopLabel}` : (scheduled ? stopLabel : null);
-                  } else {
-                    statusNode = <span className="text-xs text-slate-600">Scheduled</span>;
-                    timeMain = <span className="text-base font-bold text-slate-500">{scheduled ?? '—'}</span>;
-                    timeSub = scheduled ? stopLabel : null;
-                  }
+                  statusNode = (
+                    <span className={`text-xs font-semibold uppercase tracking-wide ${phase.labelClass} ${phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
+                      {phase.label}
+                    </span>
+                  );
+                  timeMain = (
+                    <span className={`text-base font-bold ${phase.labelClass} ${phase.animate === 'bounce' ? 'animate-bounce' : phase.animate === 'pulse' ? 'animate-pulse' : ''}`}>
+                      {phase.label}
+                    </span>
+                  );
+                  timeSub = phase.sublabel ?? (scheduled && phase.phase === 'SCHEDULED' ? null : scheduled ? (idx === 0 ? 'Departs' : 'Arrives') : null);
 
                   const expanded = selectedStop?.stopId === stop.stop_id;
 
@@ -1040,7 +970,7 @@ export default function RailLineSection() {
                             </span>
                           )}
                           <div>{statusNode}</div>
-                          {phase && phase.upcoming.length > 0 && (
+                          {phase.upcoming.length > 0 && (
                             <p className="mt-0.5 text-xs text-slate-600">
                               then {phase.upcoming.slice(0, 2).map((a) => {
                                 const d = a.time - nowSec;
@@ -1078,7 +1008,8 @@ export default function RailLineSection() {
                                 {arrivals.slice(0, 4).map((a, ai) => {
                                   const d = a.time - nowSec;
                                   const isNow = d > -25 && d < 30;
-                                  const { text: countText, cls: countClass } = countdownLabel(d);
+                                  // derive text + class from the same phase thresholds
+                                  const singlePhase = computePhase([a], stopVehicles, nowSec, 'middle', null);
                                   return (
                                     <div key={ai} className={`flex items-center justify-between text-xs ${isNow ? 'rounded bg-slate-800/60 px-1.5 py-0.5' : ''}`}>
                                       <span className="text-slate-400">{formatClockTime(a.time)}</span>
@@ -1088,7 +1019,7 @@ export default function RailLineSection() {
                                             {a.delaySeconds > 0 ? '+' : ''}{Math.round(a.delaySeconds / 60)} min
                                           </span>
                                         )}
-                                        <span className={`font-semibold ${countClass}`}>{countText}</span>
+                                        <span className={`font-semibold ${singlePhase.labelClass}`}>{singlePhase.label}</span>
                                       </div>
                                     </div>
                                   );
@@ -1146,8 +1077,7 @@ export default function RailLineSection() {
 
                                         <div className="space-y-1">
                                           {allLive.map((a) => {
-                                            const d = a.time - nowSec;
-                                            const { text: countText, cls: countClass } = countdownLabel(d);
+                                            const livePhase = computePhase([a], [], nowSec, 'middle', null);
                                             return (
                                               <div key={a.tripId} className="flex items-center justify-between text-xs">
                                                 <div className="flex items-center gap-1.5">
@@ -1159,21 +1089,21 @@ export default function RailLineSection() {
                                                   )}
                                                   <span className="text-[10px] text-emerald-600">live</span>
                                                 </div>
-                                                <span className={`font-semibold ${countClass}`}>{countText}</span>
+                                                <span className={`font-semibold ${livePhase.labelClass}`}>{livePhase.label}</span>
                                               </div>
                                             );
                                           })}
 
                                           {scheduledToShow.map((s, si) => {
-                                            const nowMins = now / 1000 / 60;
-                                            const { text: countText, cls: countClass } = countdownLabel((s.timeMinutes - nowMins) * 60);
+                                            const diffSec = (s.timeMinutes - now / 1000 / 60) * 60;
+                                            const mins = Math.round(diffSec / 60);
                                             return (
                                               <div key={si} className="flex items-center justify-between text-xs">
                                                 <div className="flex items-center gap-1.5">
                                                   <span className="text-slate-400">{s.timeDisplay}</span>
                                                   <span className="text-[10px] text-slate-600">sched</span>
                                                 </div>
-                                                <span className={`font-semibold ${countClass}`}>{countText}</span>
+                                                <span className="font-semibold text-slate-400">{mins > 0 ? `${mins} min` : 'Due'}</span>
                                               </div>
                                             );
                                           })}
