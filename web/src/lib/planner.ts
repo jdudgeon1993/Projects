@@ -155,21 +155,31 @@ function makeLeg(board: StopTimeRow, alight: StopTimeRow, tripUpdates: ParsedFee
   };
 }
 
-/** Returns the set of service_ids that are active today for the given route. */
+/**
+ * Returns the set of service_ids that are active today for the given route.
+ * Falls back to ALL service_ids for the route if calendar data is unavailable
+ * (empty table, import not run, etc.) so the planner always returns results.
+ */
 async function activeServiceIds(routeId: string): Promise<Set<string>> {
   if (!supabase) return new Set();
   const { data: trips } = await supabase.from('rtd_trips').select('service_id').eq('route_id', routeId);
   if (!trips || trips.length === 0) return new Set();
-  const serviceIds = [...new Set(trips.map((t: any) => t.service_id as string))];
+  const allServiceIds = [...new Set(trips.map((t: any) => t.service_id as string))];
 
   const now = new Date();
   const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const weekday = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][now.getDay()];
 
-  const [{ data: cal }, { data: exceptions }] = await Promise.all([
-    supabase.from('rtd_calendar').select('service_id, start_date, end_date, ' + weekday).in('service_id', serviceIds),
-    supabase.from('rtd_calendar_dates').select('service_id, exception_type').in('service_id', serviceIds).eq('date', today),
+  const [{ data: cal, error: calErr }, { data: exceptions }] = await Promise.all([
+    supabase.from('rtd_calendar').select('service_id, start_date, end_date, ' + weekday).in('service_id', allServiceIds),
+    supabase.from('rtd_calendar_dates').select('service_id, exception_type').in('service_id', allServiceIds).eq('date', today),
   ]);
+
+  // If calendar data is missing or the query failed, fall back to all trips
+  // so results still show rather than erroring out silently.
+  if (calErr || (!cal?.length && !exceptions?.length)) {
+    return new Set(allServiceIds);
+  }
 
   const added = new Set((exceptions ?? []).filter((e: any) => Number(e.exception_type) === 1).map((e: any) => e.service_id as string));
   const removed = new Set((exceptions ?? []).filter((e: any) => Number(e.exception_type) === 2).map((e: any) => e.service_id as string));
@@ -180,7 +190,10 @@ async function activeServiceIds(routeId: string): Promise<Set<string>> {
       active.add(c.service_id as string);
     }
   }
-  return active;
+
+  // If filtering produced zero results despite having calendar rows, fall back
+  // to all trips rather than returning nothing (e.g. date range issue).
+  return active.size > 0 ? active : new Set(allServiceIds);
 }
 
 /** Closest pair of stops between two routes — for "why didn't this connect?" diagnostics. */
@@ -262,13 +275,11 @@ export async function planChain(
       if (!routeId || !supabase) return empty;
 
       const activeIds = await activeServiceIds(routeId);
-      if (activeIds.size === 0) return empty;
 
-      const { data: trips } = await supabase
-        .from('rtd_trips')
-        .select('trip_id')
-        .eq('route_id', routeId)
-        .in('service_id', [...activeIds]);
+      const tripsQuery = supabase.from('rtd_trips').select('trip_id').eq('route_id', routeId);
+      const { data: trips } = activeIds.size > 0
+        ? await tripsQuery.in('service_id', [...activeIds])
+        : await tripsQuery;
       if (!trips || trips.length === 0) return empty;
 
       const rows = await stopTimesForTrips(trips.map((t: any) => t.trip_id));
