@@ -10,7 +10,7 @@ import {
   type RouteOverview,
   type StopSearchResult,
 } from '../lib/schedule';
-import { planChain, type Itinerary } from '../lib/planner';
+import { planChain, type Itinerary, type ItineraryLeg } from '../lib/planner';
 import { loadSavedTrips, persistSavedTrips, type SavedTrip } from '../lib/savedTrips';
 import type { ParsedFeed } from '../lib/gtfsrt';
 
@@ -18,14 +18,14 @@ const ChainMap = lazy(() => import('./ChainMap'));
 
 const TRANSFER_ESTIMATE_MINUTES = 5;
 
-/** "45 min" under an hour, "1 hr 52 min" above. */
 function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 60) return `${Math.round(minutes)} min`;
   const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+  const m = Math.round(minutes % 60);
   return m === 0 ? `${h} hr` : `${h} hr ${m} min`;
 }
 
+/** Formats a scheduled GTFS time string "HH:MM:SS" → "9:15 AM". */
 function formatGtfsTime(time: string): string {
   const [h, m] = time.split(':').map(Number);
   if (Number.isNaN(h) || Number.isNaN(m)) return time;
@@ -33,6 +33,26 @@ function formatGtfsTime(time: string): string {
   const period = hour24 < 12 ? 'AM' : 'PM';
   const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
   return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+/** Returns the live-adjusted time string when delay is known, otherwise the scheduled string. */
+function formatLiveTime(scheduledTime: string, delaySeconds: number | null): string {
+  if (!delaySeconds) return formatGtfsTime(scheduledTime);
+  const [h, m, s] = scheduledTime.split(':').map(Number);
+  const baseMinutes = h * 60 + m + (s ?? 0) / 60 + delaySeconds / 60;
+  const hour24 = Math.floor(baseMinutes / 60) % 24;
+  const min = Math.round(baseMinutes % 60);
+  const period = hour24 < 12 ? 'AM' : 'PM';
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${String(min).padStart(2, '0')} ${period}`;
+}
+
+/** How many minutes from now until a scheduled+delayed departure. */
+function minutesUntil(gtfsTime: string, delaySeconds: number | null, nowMinutes: number): number {
+  const [h, m] = gtfsTime.split(':').map(Number);
+  const scheduled = (h % 24) * 60 + m;
+  const live = scheduled + (delaySeconds ?? 0) / 60;
+  return Math.round(live - nowMinutes);
 }
 
 function RouteBadge({ name, color }: { name: string; color: string | null }) {
@@ -43,6 +63,52 @@ function RouteBadge({ name, color }: { name: string; color: string | null }) {
     >
       {name}
     </span>
+  );
+}
+
+function LegCard({ leg, waitMinutes, nowMinutes }: { leg: ItineraryLeg; waitMinutes?: number; nowMinutes: number }) {
+  const liveBoard = formatLiveTime(leg.boardTime, leg.delaySeconds);
+  const liveAlight = formatLiveTime(leg.alightTime, leg.delaySeconds);
+  const isLate = leg.delaySeconds != null && leg.delaySeconds >= 60;
+  const isEarly = leg.delaySeconds != null && leg.delaySeconds <= -60;
+  const until = minutesUntil(leg.boardTime, leg.delaySeconds, nowMinutes);
+  const showCountdown = until >= 0 && until <= 60;
+
+  return (
+    <div>
+      {waitMinutes != null && (
+        <div className={`mb-1.5 ml-8 flex items-center gap-1.5 text-xs ${waitMinutes < 5 ? 'text-amber-400' : waitMinutes > 25 ? 'text-slate-500' : 'text-sky-400'}`}>
+          <span>⏱</span>
+          <span>
+            {waitMinutes < 1 ? 'Immediate transfer' : `${Math.round(waitMinutes)} min transfer wait`}
+          </span>
+        </div>
+      )}
+      <div className="flex items-start gap-2.5">
+        <RouteBadge name={leg.routeShortName} color={leg.routeColor} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="font-medium text-slate-100">
+              {liveBoard}
+              {isLate && <span className="ml-1 text-xs text-yellow-400">+{Math.round(leg.delaySeconds! / 60)} min late</span>}
+              {isEarly && <span className="ml-1 text-xs text-emerald-400">{Math.round(-leg.delaySeconds! / 60)} min early</span>}
+            </span>
+            {showCountdown && (
+              <span className={`text-xs font-medium ${until <= 3 ? 'text-red-400' : until <= 10 ? 'text-amber-400' : 'text-slate-400'}`}>
+                {until === 0 ? 'Departing now' : `in ${until} min`}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-400">
+            Board <span className="text-slate-300">{leg.boardStopName}</span>
+            {leg.headsign ? <span className="text-slate-500"> · toward {leg.headsign}</span> : null}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {routeTypeLabel(leg.routeType)} · ride to <span className="text-slate-400">{leg.alightStopName}</span> · arr {liveAlight}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -101,6 +167,7 @@ function RouteFinder({ onPick }: { onPick: (shortName: string) => void }) {
                 type="button"
                 onClick={() => {
                   setPicked(s);
+                  setQuery(s.stopName);
                   setStops([]);
                 }}
                 className="block w-full truncate px-2 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-700"
@@ -110,22 +177,24 @@ function RouteFinder({ onPick }: { onPick: (shortName: string) => void }) {
             ))}
           </div>
         )}
-        {picked && (
-          <div>
-            <p className="mb-1 text-xs text-slate-500">Routes at {picked.stopName} — tap to add:</p>
-            {routes === null ? (
-              <p className="text-xs text-slate-500">Loading…</p>
-            ) : routes.length === 0 ? (
-              <p className="text-xs text-slate-500">No routes found at this stop.</p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {routes.map((r) => (
-                  <button key={r.shortName} type="button" onClick={() => onPick(r.shortName)} title={r.longName}>
-                    <RouteBadge name={r.shortName} color={r.color} />
-                  </button>
-                ))}
-              </div>
-            )}
+        {picked && routes === null && <p className="text-xs text-slate-500">Loading routes…</p>}
+        {picked && routes !== null && routes.length === 0 && (
+          <p className="text-xs text-slate-500">No routes found at this stop.</p>
+        )}
+        {picked && routes && routes.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {routes.map((r) => (
+              <button
+                key={r.routeId}
+                type="button"
+                onClick={() => onPick(r.shortName)}
+                className="flex items-center gap-1.5 rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                title={r.longName}
+              >
+                <RouteBadge name={r.shortName} color={r.color} />
+                <span>{r.longName}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -138,6 +207,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
   const [chain, setChain] = useState<string[]>([]);
   const [routeQuery, setRouteQuery] = useState('');
   const [savedTrips, setSavedTrips] = useState<SavedTrip[]>(loadSavedTrips);
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
 
   function persistTrips(next: SavedTrip[]) {
     setSavedTrips(next);
@@ -159,7 +229,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
     setState('idle');
   }
 
-  // Route-scoped stop pickers: board on the FIRST route, exit on the LAST.
   const [firstOverview, setFirstOverview] = useState<RouteOverview | null>(null);
   const [lastOverview, setLastOverview] = useState<RouteOverview | null>(null);
   const [boardStopId, setBoardStopId] = useState('');
@@ -171,7 +240,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
   const [fallbackRoutes, setFallbackRoutes] = useState<RouteOverview[]>([]);
   const [showingDayStart, setShowingDayStart] = useState(false);
 
-  // When to travel: leave now (default), depart at a time, or arrive by a time.
   const [timeMode, setTimeMode] = useState<'now' | 'depart' | 'arrive'>('now');
   const [timeValue, setTimeValue] = useState('');
 
@@ -188,8 +256,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
   const firstRoute = chain[0] ?? null;
   const lastRoute = chain[chain.length - 1] ?? null;
 
-  // Stops to restore after a chain change (Reverse button, saved-trip load) —
-  // the effects below otherwise reset the pickers whenever the routes change.
   const pendingStops = useRef<{ board?: string; exit?: string }>({});
 
   useEffect(() => {
@@ -216,7 +282,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
       setLastOverview(null);
       return;
     }
-    if (lastRoute === firstRoute) return; // single-route chain reuses firstOverview
+    if (lastRoute === firstRoute) return;
     let cancelled = false;
     setLastOverview(null);
     getRouteOverview(lastRoute).then((o) => {
@@ -262,7 +328,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
             : {};
       let result = await planChain(boardStopId || null, exitStopId || null, chain, tripUpdates, opts);
 
-      // "Leave now" with nothing left today — show how the first trips of the day connect instead.
       if (result.itineraries.length === 0 && timeMode === 'now') {
         const dayStart = await planChain(boardStopId || null, exitStopId || null, chain, tripUpdates, {
           startMinutes: 0,
@@ -276,7 +341,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
       setItineraries(result.itineraries);
       setIssues(result.issues);
 
-      // Last resort: nothing connects at any time of day -> show the routes on a map with a rough estimate.
       if (result.itineraries.length === 0) {
         const overviews = await Promise.all(chain.map((name) => getRouteOverview(name)));
         setFallbackRoutes(overviews.filter((o): o is RouteOverview => o !== null));
@@ -303,7 +367,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
         </p>
       </div>
 
-      {/* Saved trips: one-tap presets for the daily commute */}
+      {/* Saved trips */}
       {savedTrips.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {savedTrips.map((trip) => (
@@ -328,7 +392,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
         </div>
       )}
 
-      {/* Step 1: the route chain */}
+      {/* Step 1: route chain */}
       <div className="relative">
         <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">1 · Your routes, in order</label>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -352,7 +416,6 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
             <button
               type="button"
               onClick={() => {
-                // Board/exit stops follow their routes when the chain flips.
                 pendingStops.current = { board: exitStopId, exit: boardStopId };
                 setChain((prev) => [...prev].reverse());
                 setItineraries([]);
@@ -403,7 +466,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
 
       <RouteFinder onPick={addRoute} />
 
-      {/* Step 2: optional boarding/exit stops, scoped to the first/last route */}
+      {/* Step 2: optional boarding/exit stops */}
       {chain.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -416,7 +479,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
               disabled={!firstOverview}
               className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-200 disabled:opacity-50"
             >
-              <option value="">{firstOverview ? 'Anywhere (start of line)' : 'Loading stops…'}</option>
+              <option value="">{firstOverview ? 'Anywhere on the route' : 'Loading stops…'}</option>
               {firstOverview?.stops.map((s) => (
                 <option key={s.stop_id} value={s.stop_id}>
                   {s.stop_name}
@@ -445,7 +508,7 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
         </div>
       )}
 
-      {/* When to travel */}
+      {/* Step 3: when to travel */}
       {chain.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs uppercase tracking-wide text-slate-500">4 · When</label>
@@ -502,63 +565,65 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
 
       {showingDayStart && itineraries.length > 0 && (
         <p className="text-sm text-sky-400">
-          No connections left today — here's how the first trips of the service day line up:
+          No more departures today — showing the first trips of tomorrow's service day:
         </p>
       )}
 
-      {itineraries.map((it, i) => (
-        <div key={i} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
-          <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="font-semibold text-slate-200">
-              {formatGtfsTime(it.legs[0].boardTime)} → {formatGtfsTime(it.legs[it.legs.length - 1].alightTime)}
-            </span>
-            <span className="text-slate-400">
-              {formatDuration(it.totalMinutes)} · {it.transfers === 0 ? 'direct' : `${it.transfers} transfer${it.transfers > 1 ? 's' : ''}`}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {it.legs.map((leg, j) => (
-              <div key={j}>
-                {j > 0 && it.transferWaits?.[j - 1] != null && (
-                  <p
-                    className={`mb-1 pl-8 text-xs ${
-                      it.transferWaits[j - 1] >= 20 ? 'text-amber-400' : 'text-slate-500'
-                    }`}
-                  >
-                    ⏱ {formatDuration(Math.max(0, it.transferWaits[j - 1]))} wait at {leg.boardStopName}
-                  </p>
-                )}
-                <div className="flex items-start gap-2 text-sm">
-                <RouteBadge name={leg.routeShortName} color={leg.routeColor} />
-                <div className="min-w-0">
-                  <p className="text-slate-200">
-                    Board at <span className="font-medium">{leg.boardStopName}</span> ·{' '}
-                    {formatGtfsTime(leg.boardTime)}
-                    {leg.delaySeconds != null && Math.abs(leg.delaySeconds) >= 60 && (
-                      <span className={leg.delaySeconds > 0 ? 'text-yellow-400' : 'text-emerald-400'}>
-                        {' '}
-                        ({leg.delaySeconds > 0 ? '+' : ''}
-                        {Math.round(leg.delaySeconds / 60)} min live)
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {routeTypeLabel(leg.routeType)} · arrive {leg.alightStopName} at {formatGtfsTime(leg.alightTime)}
-                  </p>
-                </div>
-                </div>
+      {itineraries.map((it, idx) => {
+        const firstLeg = it.legs[0];
+        const lastLeg = it.legs[it.legs.length - 1];
+        // Effective total minutes accounting for any known delays on first/last leg.
+        const effectiveDepart = (it.departMinutes) + (firstLeg.delaySeconds ?? 0) / 60;
+        const effectiveArrive = (it.arriveMinutes) + (lastLeg.delaySeconds ?? 0) / 60;
+        const effectiveTotal = Math.round(effectiveArrive - effectiveDepart);
+        const hasLiveData = it.legs.some((l) => l.delaySeconds != null);
+
+        return (
+          <div key={idx} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+            {/* Card header: depart → arrive + duration */}
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-slate-100">
+                  {formatLiveTime(firstLeg.boardTime, firstLeg.delaySeconds)}
+                  <span className="mx-1.5 text-slate-500">→</span>
+                  {formatLiveTime(lastLeg.alightTime, lastLeg.delaySeconds)}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {it.transfers === 0 ? 'Direct' : `${it.transfers} transfer${it.transfers > 1 ? 's' : ''}`}
+                  {hasLiveData ? ` · ${formatDuration(effectiveTotal)} (live)` : ` · ${formatDuration(it.totalMinutes)} scheduled`}
+                </p>
               </div>
+              <div className="flex shrink-0 flex-wrap gap-1">
+                {it.legs.map((l, j) => (
+                  <RouteBadge key={j} name={l.routeShortName} color={l.routeColor} />
+                ))}
+              </div>
+            </div>
+
+            {/* Leg detail */}
+            <div className="space-y-3">
+              {it.legs.map((leg, j) => (
+                <LegCard
+                  key={j}
+                  leg={leg}
+                  waitMinutes={j > 0 && it.transferWaits?.[j - 1] != null ? it.transferWaits[j - 1] : undefined}
+                  nowMinutes={nowMinutes}
+                />
+              ))}
+            </div>
+
+            {/* Live delay warnings */}
+            {(it.warnings ?? []).map((w, j) => (
+              <p key={j} className="mt-2 flex items-start gap-1 text-xs text-red-400">
+                <span>⚠</span>
+                <span>{w}</span>
+              </p>
             ))}
           </div>
-          {(it.warnings ?? []).map((w, j) => (
-            <p key={j} className="mt-2 text-xs text-red-400">
-              ⚠ {w}
-            </p>
-          ))}
-        </div>
-      ))}
+        );
+      })}
 
-      {/* Fallback: no scheduled itinerary — show the chained routes on a map with a rough estimate */}
+      {/* Fallback: no scheduled itinerary — show routes on map */}
       {state === 'done' && itineraries.length === 0 && fallbackRoutes.length > 0 && (
         <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950 p-3">
           <div className="flex items-center justify-between text-sm">
@@ -579,15 +644,15 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
             <ChainMap routes={fallbackRoutes} />
           </Suspense>
           <p className="text-xs text-slate-500">
-            No scheduled departures matched for the rest of today, so here's both routes on the map — where the lines
-            come close is your transfer point. The estimate uses each route's typical end-to-end time.
+            No scheduled departures matched for today. Here's both routes on the map — where the lines come close is
+            your transfer point. The estimate uses each route's typical end-to-end time.
           </p>
         </div>
       )}
 
       <p className="text-[10px] text-slate-600">
-        Times are from RTD's schedule; live delay shown when a matching vehicle is reporting. Transfers connect any
-        stops within a 400m walk (4 min buffer) — including bus bay to rail platform.
+        Times from RTD's schedule for today's service. Live delay shown when a matching vehicle is reporting.
+        Transfers connect stops within {' '} a 400m walk.
       </p>
     </div>
   );

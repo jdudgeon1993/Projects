@@ -2,8 +2,7 @@ import { supabase } from './supabase';
 import { gtfsTimeToMinutes } from './schedule';
 import { getTripDelay, type ParsedFeed } from './gtfsrt';
 
-const TRANSFER_BUFFER_MINUTES = 3;
-const MAX_ITINERARIES = 3;
+const MAX_ITINERARIES = 6;
 /** Stops within this distance count as the same transfer point (bus bay <-> rail platform, across a park-n-ride). */
 const WALK_RADIUS_METERS = 400;
 /** Extra minutes for a proximity (walking) transfer vs a same-platform one. */
@@ -25,17 +24,18 @@ export interface ItineraryLeg {
   routeType: number;
   routeColor: string | null;
   tripId: string;
+  headsign: string;
   boardStopName: string;
-  boardTime: string; // GTFS HH:MM:SS
+  boardTime: string; // GTFS HH:MM:SS (scheduled)
   alightStopName: string;
-  alightTime: string;
+  alightTime: string; // GTFS HH:MM:SS (scheduled)
   delaySeconds: number | null;
 }
 
 export interface Itinerary {
   legs: ItineraryLeg[];
-  departMinutes: number;
-  arriveMinutes: number;
+  departMinutes: number; // scheduled
+  arriveMinutes: number; // scheduled
   totalMinutes: number;
   transfers: number;
   /** Minutes spent waiting before each leg after the first (index i = wait before legs[i+1]). */
@@ -88,6 +88,7 @@ interface StopTimeRow {
   route_long_name: string;
   route_type: number;
   route_color: string | null;
+  headsign: string;
 }
 
 function mapRow(r: any): StopTimeRow | null {
@@ -106,21 +107,12 @@ function mapRow(r: any): StopTimeRow | null {
     route_long_name: r.rtd_trips.rtd_routes.route_long_name,
     route_type: Number(r.rtd_trips.rtd_routes.route_type),
     route_color: r.rtd_trips.rtd_routes.route_color ? `#${r.rtd_trips.rtd_routes.route_color}` : null,
+    headsign: r.rtd_trips.trip_headsign ?? r.rtd_trips.rtd_routes.route_long_name ?? '',
   };
 }
 
 const ROW_SELECT =
-  'trip_id, stop_id, stop_sequence, arrival_time, departure_time, rtd_stops(stop_name, stop_lat, stop_lon), rtd_trips(route_id, rtd_routes(route_short_name, route_long_name, route_type, route_color))';
-
-async function stopTimesAt(stopIds: string[]): Promise<StopTimeRow[]> {
-  if (!supabase || stopIds.length === 0) return [];
-  const { data, error } = await supabase
-    .from('rtd_stop_times')
-    .select(ROW_SELECT)
-    .in('stop_id', stopIds);
-  if (error || !data) return [];
-  return (data as any[]).map(mapRow).filter((r): r is StopTimeRow => r !== null);
-}
+  'trip_id, stop_id, stop_sequence, arrival_time, departure_time, rtd_stops(stop_name, stop_lat, stop_lon), rtd_trips(route_id, trip_headsign, rtd_routes(route_short_name, route_long_name, route_type, route_color))';
 
 /** All stop_times for the given trips (used to find shared transfer stops). */
 async function stopTimesForTrips(tripIds: string[]): Promise<StopTimeRow[]> {
@@ -154,6 +146,7 @@ function makeLeg(board: StopTimeRow, alight: StopTimeRow, tripUpdates: ParsedFee
     routeType: board.route_type,
     routeColor: board.route_color,
     tripId: board.trip_id,
+    headsign: board.headsign,
     boardStopName: board.stop_name,
     boardTime: board.departure_time ?? board.arrival_time ?? '',
     alightStopName: alight.stop_name,
@@ -162,135 +155,32 @@ function makeLeg(board: StopTimeRow, alight: StopTimeRow, tripUpdates: ParsedFee
   };
 }
 
-/**
- * Plans trips from origin to destination using the imported schedule
- * (direct routes plus one-transfer combinations, e.g. bus -> rail).
- * Times are scheduled; live delays from GTFS-RT are attached per leg when known.
- */
-export async function planTrip(
-  originStopId: string,
-  destStopId: string,
-  tripUpdates: ParsedFeed | null = null,
-): Promise<Itinerary[]> {
-  if (!supabase) return [];
+/** Returns the set of service_ids that are active today for the given route. */
+async function activeServiceIds(routeId: string): Promise<Set<string>> {
+  if (!supabase) return new Set();
+  const { data: trips } = await supabase.from('rtd_trips').select('service_id').eq('route_id', routeId);
+  if (!trips || trips.length === 0) return new Set();
+  const serviceIds = [...new Set(trips.map((t: any) => t.service_id as string))];
+
   const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const weekday = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][now.getDay()];
 
-  const [originRows, destRows] = await Promise.all([stopTimesAt([originStopId]), stopTimesAt([destStopId])]);
-  if (originRows.length === 0 || destRows.length === 0) return [];
+  const [{ data: cal }, { data: exceptions }] = await Promise.all([
+    supabase.from('rtd_calendar').select('service_id, start_date, end_date, ' + weekday).in('service_id', serviceIds),
+    supabase.from('rtd_calendar_dates').select('service_id, exception_type').in('service_id', serviceIds).eq('date', today),
+  ]);
 
-  const destByTrip = new Map(destRows.map((r) => [r.trip_id, r]));
-  const itineraries: Itinerary[] = [];
+  const added = new Set((exceptions ?? []).filter((e: any) => Number(e.exception_type) === 1).map((e: any) => e.service_id as string));
+  const removed = new Set((exceptions ?? []).filter((e: any) => Number(e.exception_type) === 2).map((e: any) => e.service_id as string));
 
-  // --- Direct: same trip serves both stops in order ---
-  for (const o of originRows) {
-    const d = destByTrip.get(o.trip_id);
-    if (!d || d.stop_sequence <= o.stop_sequence) continue;
-    const dep = gtfsTimeToMinutes(o.departure_time ?? o.arrival_time);
-    const arr = gtfsTimeToMinutes(d.arrival_time ?? d.departure_time);
-    if (dep == null || arr == null || dep < nowMinutes) continue;
-    itineraries.push({
-      legs: [makeLeg(o, d, tripUpdates)],
-      departMinutes: dep,
-      arriveMinutes: arr,
-      totalMinutes: arr - dep,
-      transfers: 0,
-    });
-  }
-
-  // --- One transfer: origin trip -> shared stop -> destination trip ---
-  // Only search for transfers if direct options are scarce.
-  if (itineraries.length < MAX_ITINERARIES) {
-    const originTripIds = [...new Set(originRows.map((r) => r.trip_id))];
-    const destTripIds = [...new Set(destRows.map((r) => r.trip_id))].filter(
-      (id) => !destByTrip.has(id) || !originRows.some((o) => o.trip_id === id),
-    );
-
-    const [originFull, destFull] = await Promise.all([
-      stopTimesForTrips(originTripIds),
-      stopTimesForTrips(destTripIds),
-    ]);
-
-    const originSeqByTrip = new Map(originRows.map((r) => [r.trip_id, r.stop_sequence]));
-    const originRowByTrip = new Map(originRows.map((r) => [r.trip_id, r]));
-    const destSeqByTrip = new Map(destRows.map((r) => [r.trip_id, r.stop_sequence]));
-
-    // Index second-leg boardings by stop: trips that pass through a stop BEFORE reaching the destination.
-    const secondLegByStop = new Map<string, StopTimeRow[]>();
-    for (const row of destFull) {
-      const destSeq = destSeqByTrip.get(row.trip_id);
-      if (destSeq == null || row.stop_sequence >= destSeq) continue;
-      if (!secondLegByStop.has(row.stop_id)) secondLegByStop.set(row.stop_id, []);
-      secondLegByStop.get(row.stop_id)!.push(row);
-    }
-
-    for (const row of originFull) {
-      const originSeq = originSeqByTrip.get(row.trip_id);
-      if (originSeq == null || row.stop_sequence <= originSeq) continue; // must be after boarding
-      const candidates = secondLegByStop.get(row.stop_id);
-      if (!candidates) continue;
-
-      const firstBoard = originRowByTrip.get(row.trip_id)!;
-      // Don't suggest "transferring" to the same route
-      const dep1 = gtfsTimeToMinutes(firstBoard.departure_time ?? firstBoard.arrival_time);
-      const arr1 = gtfsTimeToMinutes(row.arrival_time ?? row.departure_time);
-      if (dep1 == null || arr1 == null || dep1 < nowMinutes) continue;
-
-      for (const second of candidates) {
-        if (second.route_short_name === firstBoard.route_short_name) continue;
-        const dep2 = gtfsTimeToMinutes(second.departure_time ?? second.arrival_time);
-        if (dep2 == null || dep2 < arr1 + TRANSFER_BUFFER_MINUTES) continue;
-        const destRow = destByTrip.get(second.trip_id);
-        if (!destRow) continue;
-        const arr2 = gtfsTimeToMinutes(destRow.arrival_time ?? destRow.departure_time);
-        if (arr2 == null) continue;
-
-        itineraries.push({
-          legs: [makeLeg(firstBoard, row, tripUpdates), makeLeg(second, destRow, tripUpdates)],
-          departMinutes: dep1,
-          arriveMinutes: arr2,
-          totalMinutes: arr2 - dep1,
-          transfers: 1,
-        });
-      }
+  const active = new Set<string>(added);
+  for (const c of (cal ?? []) as any[]) {
+    if (!removed.has(c.service_id) && Number(c[weekday]) === 1 && c.start_date <= today && c.end_date >= today) {
+      active.add(c.service_id as string);
     }
   }
-
-  // Earliest arrival wins; dedupe near-identical options (same routes + same departure).
-  itineraries.sort((a, b) => a.arriveMinutes - b.arriveMinutes);
-  const seen = new Set<string>();
-  const unique: Itinerary[] = [];
-  for (const it of itineraries) {
-    const key = it.legs.map((l) => `${l.routeShortName}@${l.boardTime}`).join('>');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(it);
-    if (unique.length >= MAX_ITINERARIES) break;
-  }
-  return unique;
-}
-
-/** All stop_times for a route's imported trips, grouped by trip and ordered by stop_sequence. */
-async function routeTripRows(routeShortName: string): Promise<Map<string, StopTimeRow[]>> {
-  const empty = new Map<string, StopTimeRow[]>();
-  if (!supabase) return empty;
-  const { data: route } = await supabase
-    .from('rtd_routes')
-    .select('route_id')
-    .eq('route_short_name', routeShortName)
-    .maybeSingle();
-  if (!route) return empty;
-  const { data: trips } = await supabase.from('rtd_trips').select('trip_id').eq('route_id', route.route_id);
-  if (!trips || trips.length === 0) return empty;
-
-  const rows = await stopTimesForTrips(trips.map((t: any) => t.trip_id));
-  const byTrip = new Map<string, StopTimeRow[]>();
-  for (const r of rows) {
-    if (!byTrip.has(r.trip_id)) byTrip.set(r.trip_id, []);
-    byTrip.get(r.trip_id)!.push(r);
-  }
-  for (const list of byTrip.values()) list.sort((a, b) => a.stop_sequence - b.stop_sequence);
-  return byTrip;
+  return active;
 }
 
 /** Closest pair of stops between two routes — for "why didn't this connect?" diagnostics. */
@@ -356,15 +246,48 @@ export async function planChain(
   if (originStopId && !originStop) return { itineraries: [], issues: ['Could not load the origin stop.'] };
   if (destStopId && !destStop) return { itineraries: [], issues: ['Could not load the destination stop.'] };
 
-  const routeRows = await Promise.all(routeNames.map(routeTripRows));
+  // Resolve route_ids and load today-only trips for each route in the chain.
+  const routeIdResults = await Promise.all(
+    routeNames.map((name) =>
+      supabase!.from('rtd_routes').select('route_id').eq('route_short_name', name).maybeSingle(),
+    ),
+  );
+
+  const resolvedRouteIds: (string | null)[] = routeIdResults.map((r) => r.data?.route_id ?? null);
+
+  // Load active service_ids and trip rows only for today's service.
+  const routeRows = await Promise.all(
+    resolvedRouteIds.map(async (routeId): Promise<Map<string, StopTimeRow[]>> => {
+      const empty = new Map<string, StopTimeRow[]>();
+      if (!routeId || !supabase) return empty;
+
+      const activeIds = await activeServiceIds(routeId);
+      if (activeIds.size === 0) return empty;
+
+      const { data: trips } = await supabase
+        .from('rtd_trips')
+        .select('trip_id')
+        .eq('route_id', routeId)
+        .in('service_id', [...activeIds]);
+      if (!trips || trips.length === 0) return empty;
+
+      const rows = await stopTimesForTrips(trips.map((t: any) => t.trip_id));
+      const byTrip = new Map<string, StopTimeRow[]>();
+      for (const r of rows) {
+        if (!byTrip.has(r.trip_id)) byTrip.set(r.trip_id, []);
+        byTrip.get(r.trip_id)!.push(r);
+      }
+      for (const list of byTrip.values()) list.sort((a, b) => a.stop_sequence - b.stop_sequence);
+      return byTrip;
+    }),
+  );
+
   for (let i = 0; i < routeNames.length; i++) {
-    if (routeRows[i].size === 0) issues.push(`No schedule data found for route ${routeNames[i]}.`);
+    if (routeRows[i].size === 0) issues.push(`No schedule data found for route ${routeNames[i]} today.`);
   }
   if (issues.length > 0) return { itineraries: [], issues };
 
-  // Multiple departure options: run the chain from a few different start times.
   const finals: Itinerary[] = [];
-  // With no origin stop, ride the first route from its starting terminal.
   let states: ChainState[] = [
     originStop
       ? {
@@ -380,6 +303,7 @@ export async function planChain(
   for (let i = 0; i < routeNames.length; i++) {
     const isFirst = i === 0;
     const isLast = i === routeNames.length - 1;
+    // First route: no buffer (board immediately). Transfer legs: allow time to walk.
     const buffer = isFirst ? 0 : WALK_TRANSFER_BUFFER_MINUTES;
     const nextStates = new Map<string, ChainState>();
     let boardedAnywhere = false;
@@ -402,15 +326,17 @@ export async function planChain(
 
     for (const trip of routeRows[i].values()) {
       for (const state of states) {
-        // Find the first stop on this trip we can board: near the state's location, departing after we arrive (+buffer).
+        // Find the first boardable stop on this trip: near the state's location,
+        // departing after we arrive (+buffer).
+        // When no origin is specified on the first route, allow boarding at ANY
+        // stop (not just k=0) so we don't miss trips that start at the far end.
         let boardIdx = -1;
         for (let k = 0; k < trip.length; k++) {
           const row = trip[k];
-          const near =
-            isFirst && !originStop
-              ? k === 0 // no origin chosen: board at the trip's starting terminal
-              : row.stop_id === state.stopId ||
-                distMeters(row.stop_lat, row.stop_lon, state.lat, state.lon) <= WALK_RADIUS_METERS;
+          const near = isFirst && !originStop
+            ? true // no origin constraint: can board anywhere on the first route
+            : row.stop_id === state.stopId ||
+              distMeters(row.stop_lat, row.stop_lon, state.lat, state.lon) <= WALK_RADIUS_METERS;
           if (!near) continue;
           const dep = gtfsTimeToMinutes(row.departure_time ?? row.arrival_time);
           if (dep == null || dep < state.arriveMinutes + buffer) continue;
@@ -431,7 +357,7 @@ export async function planChain(
             const atDest = destStop
               ? alight.stop_id === destStop.stop_id ||
                 distMeters(alight.stop_lat, alight.stop_lon, Number(destStop.stop_lat), Number(destStop.stop_lon)) <= WALK_RADIUS_METERS
-              : k === trip.length - 1; // no destination chosen: ride to the end of the line
+              : k === trip.length - 1; // no destination: ride to the end of the line
             if (atDest) {
               const dep0 = gtfsTimeToMinutes(legs[0].boardTime)!;
               finals.push({
@@ -441,7 +367,7 @@ export async function planChain(
                 totalMinutes: arr - dep0,
                 transfers: legs.length - 1,
               });
-              break; // first reachable destination stop on this trip is the arrival
+              break;
             }
           } else {
             // Skip alight points the next route can't be reached from.
@@ -449,8 +375,8 @@ export async function planChain(
               !nextRouteStops ||
               nextRouteStops.some((s) => distMeters(alight.stop_lat, alight.stop_lon, s.lat, s.lon) <= WALK_RADIUS_METERS);
             if (!reachable) continue;
-            // Candidate transfer point toward the next route — keep the earliest arrival
-            // per (stop, first-leg departure) so later departures survive for arrive-by mode.
+            // Candidate transfer point — keep the earliest arrival per
+            // (stop, first-leg departure) so later departures survive for arrive-by mode.
             const stateKey = `${alight.stop_id}|${legs[0]?.boardTime ?? ''}`;
             const existing = nextStates.get(stateKey);
             if (!existing || arr < existing.arriveMinutes) {
@@ -478,14 +404,14 @@ export async function planChain(
         if (approach) {
           issues.push(
             approach.meters <= WALK_RADIUS_METERS
-              ? `${routeNames[i]} and ${routeNames[i + 1]} do connect at ${approach.stopA} / ${approach.stopB} (${Math.round(approach.meters)}m apart) — the remaining schedules today just don't line up. Try earlier in the day.`
+              ? `${routeNames[i]} and ${routeNames[i + 1]} do connect at ${approach.stopA} / ${approach.stopB} (${Math.round(approach.meters)}m apart) — the remaining schedules today just don't line up.`
               : `Closest the two routes get: ${approach.stopA} to ${approach.stopB}, ~${Math.round(approach.meters)}m apart (beyond the ${WALK_RADIUS_METERS}m walk limit).`,
           );
         }
         return { itineraries: [], issues };
       }
-      // Keep the search bounded. For arrive-by, keep the LATEST candidates that
-      // can still make the deadline; otherwise keep the earliest arrivals.
+      // Keep the search bounded. For arrive-by, keep the LATEST candidates
+      // that can still make the deadline; otherwise keep earliest arrivals.
       let pool = [...nextStates.values()];
       if (options.arriveByMinutes != null) {
         pool = pool
@@ -515,48 +441,48 @@ export async function planChain(
         `Nothing arrives by the requested time — earliest possible arrival on this combo is ${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}.`,
       );
     }
-    // Arrive-by mode: prefer leaving as late as possible while still making it.
     candidates.sort((a, b) => b.departMinutes - a.departMinutes);
   } else {
     candidates.sort((a, b) => a.arriveMinutes - b.arriveMinutes);
   }
 
-  // Dominance pruning: drop any option that's no better than another in either
-  // dimension and strictly worse in at least one — e.g. same connecting train,
-  // just an earlier/wasted departure, or same bus with a later arrival.
+  // Dominance pruning: drop any option strictly dominated by another —
+  // i.e. another leaves at least as late AND arrives at least as early
+  // AND has less or equal transfer wait. Must be strictly better in at
+  // least one dimension to count as dominating.
   const totalWait = (it: Itinerary) =>
     it.legs.slice(1).reduce((sum, leg, i) => {
       const arr = gtfsTimeToMinutes(it.legs[i].alightTime);
       const dep = gtfsTimeToMinutes(leg.boardTime);
       return arr != null && dep != null ? sum + (dep - arr) : sum;
     }, 0);
-  const dominated = candidates.filter(
+
+  const nonDominated = candidates.filter(
     (it) =>
       !candidates.some(
         (other) =>
           other !== it &&
           other.departMinutes >= it.departMinutes &&
           other.arriveMinutes <= it.arriveMinutes &&
+          totalWait(other) <= totalWait(it) &&
           (other.departMinutes > it.departMinutes ||
             other.arriveMinutes < it.arriveMinutes ||
-            // Same window: prefer the variant that spends less time standing around.
             totalWait(other) < totalWait(it)),
       ),
   );
 
+  // Dedupe on full leg signature.
   const seenKeys = new Set<string>();
   const dedup: Itinerary[] = [];
-  for (const it of dominated) {
-    // Dedupe on the full leg signature (board AND alight) so near-identical variants collapse.
+  for (const it of nonDominated) {
     const key = it.legs.map((l) => `${l.routeShortName}@${l.boardTime}>${l.alightTime}@${l.alightStopName}`).join('|');
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
     dedup.push(it);
   }
 
-  // Diversify: prefer options that catch a different connecting trip on the
-  // final leg, so cards represent genuinely different journeys rather than
-  // the same train/bus reached via slightly different earlier departures.
+  // Diversify: prefer options that catch a different connecting train on the
+  // final leg so cards represent genuinely different journeys.
   const seenLastTrip = new Set<string>();
   const diverse: Itinerary[] = [];
   const rest: Itinerary[] = [];
