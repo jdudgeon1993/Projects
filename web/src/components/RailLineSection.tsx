@@ -1077,7 +1077,9 @@ export default function RailLineSection() {
 
                                         <div className="space-y-1">
                                           {allLive.map((a) => {
-                                            const livePhase = computePhase([a], [], nowSec, 'middle', null);
+                                            const diff = a.time - nowSec;
+                                            const fakeArrival: UpcomingArrival = { stopId: selectedStop!.stopId, directionId: a.directionId, time: a.time, departureTime: null, delaySeconds: a.delaySeconds, tripId: a.tripId };
+                                            const livePhase = computePhase([fakeArrival], [], nowSec, 'middle', null);
                                             return (
                                               <div key={a.tripId} className="flex items-center justify-between text-xs">
                                                 <div className="flex items-center gap-1.5">
@@ -1089,7 +1091,7 @@ export default function RailLineSection() {
                                                   )}
                                                   <span className="text-[10px] text-emerald-600">live</span>
                                                 </div>
-                                                <span className={`font-semibold ${livePhase.labelClass}`}>{livePhase.label}</span>
+                                                <span className={`font-semibold ${livePhase.labelClass}`}>{diff > 0 ? livePhase.label : 'Departed'}</span>
                                               </div>
                                             );
                                           })}
