@@ -183,18 +183,14 @@ function computePhase(
 
   // 4. INCOMING — INCOMING_AT from vehicle feed (physical truth)
   if (incomingVehicle) {
-    const label = role === 'origin' ? 'Departing soon' : 'Arriving soon';
-    return { phase: 'INCOMING', label, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400/40', labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
+    const label = role === 'origin' ? 'Departing' : 'Arriving';
+    return { phase: 'INCOMING', label, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400', labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
   }
 
-  // 5. ARRIVING — time-based close approach
+  // 5. ARRIVING — time-based close approach (single state, no "soon" split)
   if (diff <= 30) {
-    const label =
-      role === 'origin'
-        ? diff <= 7 ? 'Departing' : 'Departing soon'
-        : diff <= 7 ? 'Arriving' : 'Arriving soon';
-    const dotClass = diff <= 7 ? 'border-red-400 bg-red-400' : 'border-red-400 bg-red-400/40';
-    return { phase: 'ARRIVING', label, sublabel: formatClockTime(current.time), dotClass, labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
+    const label = role === 'origin' ? 'Departing' : 'Arriving';
+    return { phase: 'ARRIVING', label, sublabel: formatClockTime(current.time), dotClass: 'border-red-400 bg-red-400', labelClass: 'text-red-400', animate: 'pulse', current, upcoming };
   }
 
   // 6. SECONDS countdown
@@ -919,8 +915,12 @@ export default function RailLineSection() {
                     : computePhase(arrivals, stopVehicles, nowSec, role, scheduled);
 
                   const matched = phase?.current ? vehicleByTripId[phase.current.tripId] : undefined;
-                  const trainHere = stopVehicles.some((v) => v.status === 'STOPPED_AT');
-                  const trainApproaching = !trainHere && stopVehicles.some((v) => v.status === 'IN_TRANSIT_TO' || v.status === 'INCOMING_AT');
+
+                  // Emoji position driven entirely by phase — not vehicle status flags
+                  const emojiPhase = phase.phase;
+                  const showEmojiAbove = emojiPhase === 'ARRIVING' || emojiPhase === 'INCOMING';
+                  const showEmojiAt = emojiPhase === 'AT_PLATFORM';
+                  const showEmojiBelow = emojiPhase === 'DEPARTING';
 
                   const dotClasses = phase.dotClass;
 
@@ -945,7 +945,7 @@ export default function RailLineSection() {
                   return (
                     <div key={stop.stop_id} className={`relative ${isSkipped ? 'opacity-50' : ''}`}>
                       <span className={`absolute -left-6 top-1 h-3.5 w-3.5 rounded-full border-2 transition-colors duration-300 ${dotClasses}`} />
-                      {trainApproaching && (
+                      {showEmojiAbove && (
                         <button
                           type="button"
                           onClick={() => setSelectedVehicleStop((cur) => (cur === stopKey ? null : stopKey))}
@@ -955,12 +955,22 @@ export default function RailLineSection() {
                           {isBus ? '🚌' : '🚆'}
                         </button>
                       )}
-                      {trainHere && !trainApproaching && (
+                      {showEmojiAt && (
                         <button
                           type="button"
                           onClick={() => setSelectedVehicleStop((cur) => (cur === stopKey ? null : stopKey))}
                           title="Train at this stop — tap for details"
                           className="absolute -left-[27px] top-0 z-10 animate-pulse text-lg leading-none"
+                        >
+                          {isBus ? '🚌' : '🚆'}
+                        </button>
+                      )}
+                      {showEmojiBelow && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedVehicleStop((cur) => (cur === stopKey ? null : stopKey))}
+                          title="Train departing — tap for details"
+                          className="absolute -left-[26px] bottom-0 z-10 animate-pulse text-base leading-none opacity-60"
                         >
                           {isBus ? '🚌' : '🚆'}
                         </button>
@@ -989,7 +999,7 @@ export default function RailLineSection() {
                           {selectedVehicleStop === stopKey && matched && (
                             <p className="mt-1 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300">
                               {isBus ? '🚌 Bus' : '🚆 Train'}
-                              {trainApproaching ? ' approaching' : ' here'} · {formatDelay(matched.delaySeconds)}
+                              {showEmojiAbove ? ' approaching' : showEmojiBelow ? ' departing' : ' here'} · {formatDelay(matched.delaySeconds)}
                               {matched.occupancyStatus && ` · ${formatOccupancy(matched.occupancyStatus)}`}
                             </p>
                           )}
