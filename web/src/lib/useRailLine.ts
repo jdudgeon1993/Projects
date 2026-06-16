@@ -15,6 +15,7 @@ export interface LiveVehicle {
   delaySeconds: number | null;
   occupancyStatus?: string;
   occupancyPercentage?: number;
+  feedTimestamp?: number; // unix seconds when this vehicle fix was recorded
 }
 
 export interface DirectionInfo {
@@ -152,6 +153,7 @@ export function useRailLine(shortName: string | null) {
         delaySeconds,
         occupancyStatus: v.occupancyStatus && v.occupancyStatus !== 'NO_DATA_AVAILABLE' ? v.occupancyStatus : undefined,
         occupancyPercentage: v.occupancyPercentage,
+        feedTimestamp: v.timestamp != null ? Number(v.timestamp) : undefined,
       };
     }), [vehiclePositions, tripUpdates, effectiveRouteId]);
 

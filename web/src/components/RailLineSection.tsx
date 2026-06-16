@@ -488,6 +488,7 @@ export default function RailLineSection() {
           <RailLineMap
             directions={showRail ? directions : []}
             vehicles={showRail ? vehicles : []}
+            tripUpdates={tripUpdates}
             routeColor={color}
             drivingRoute={showDriving ? { points: drivePoints!, origin: driveOrigin!, destination: driveDestPoint! } : null}
           />
