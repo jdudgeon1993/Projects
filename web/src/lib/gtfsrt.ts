@@ -227,12 +227,180 @@ export interface ServiceAlert {
   id: string;
   header: string;
   description: string;
-  routeIds: string[];
+  routeIds: string[];        // internal GTFS route_ids from informedEntity
   cause: string | null;
   effect: string | null;
   url: string | null;
   updatedAt: number;
+  // Parsed metadata — derived from header/description text
+  meta: AlertMeta;
 }
+
+export type AlertType =
+  | 'cancellation'   // trip(s) cancelled
+  | 'delay'          // delay in service
+  | 'detour'         // route detour
+  | 'stop_closure'   // stop(s) closed
+  | 'stop_move'      // stop relocated
+  | 'elevator'       // elevator/escalator out
+  | 'construction'   // construction notice
+  | 'notice';        // general informational
+
+export interface AlertMeta {
+  type: AlertType;
+  /** Short route names parsed from the header text, e.g. ["15L"], ["W"], ["JUMP"] */
+  routeShortNames: string[];
+  /** Stop IDs parsed from "(#NNNNN)" patterns in the description */
+  affectedStopIds: string[];
+  /** Directions mentioned, lower-cased, e.g. ["westbound", "eastbound"] */
+  affectedDirections: string[];
+  /** Minutes of delay when type === 'delay' */
+  delayMinutes: number | null;
+  /** Specific trip times mentioned, e.g. ["8:08 am", "10:08 am"] */
+  affectedTrips: string[];
+}
+
+// ─── Alert parsing ─────────────────────────────────────────────────────────────
+
+/** Priority order for alert types — higher index = higher severity. */
+const ALERT_TYPE_PRIORITY: Record<AlertType, number> = {
+  cancellation: 6,
+  delay:        5,
+  detour:       4,
+  stop_closure: 3,
+  stop_move:    2,
+  elevator:     1,
+  construction: 1,
+  notice:       0,
+};
+
+export function alertTypePriority(type: AlertType): number {
+  return ALERT_TYPE_PRIORITY[type] ?? 0;
+}
+
+function classifyAlertType(header: string, description: string, effect: string | null): AlertType {
+  const text = `${header} ${description}`.toLowerCase();
+  if (effect === 'NO_SERVICE' || text.includes('cancel')) return 'cancellation';
+  if (effect === 'SIGNIFICANT_DELAYS' || text.includes('delay')) return 'delay';
+  if (effect === 'DETOUR' || text.includes('detour')) return 'detour';
+  if (effect === 'STOP_MOVED' || text.includes('stop move') || text.includes('relocated')) return 'stop_move';
+  if (text.includes('elevator') || text.includes('escalator')) return 'elevator';
+  if (effect === 'NO_SERVICE' || text.includes('closed') || text.includes('closure')) return 'stop_closure';
+  if (text.includes('construction')) return 'construction';
+  return 'notice';
+}
+
+function parseRouteShortNames(header: string): string[] {
+  const names: string[] = [];
+
+  // "Route 15L", "Route 17" — bus routes
+  const busMatch = header.match(/^Route\s+([A-Z0-9]+)/i);
+  if (busMatch) names.push(busMatch[1].toUpperCase());
+
+  // "W Line", "AB1 Line", "X Line"
+  const railLineMatch = header.match(/^([A-Z][A-Z0-9]*)\s+Line\b/i);
+  if (railLineMatch) names.push(railLineMatch[1].toUpperCase());
+
+  // Named BRT / special services at start of header with no "Route" prefix
+  // e.g. "JUMP detoured...", "SKIP 208 ...", "FLEX..."
+  if (names.length === 0) {
+    const namedMatch = header.match(/^([A-Z]{2,})\b/);
+    if (namedMatch) names.push(namedMatch[1].toUpperCase());
+  }
+
+  // Rail line letter at the very start: "W Line" already caught above,
+  // but catch cases like "AB1 notice:" where there's no "Line" keyword
+  if (names.length === 0) {
+    const singleMatch = header.match(/^([A-Z][A-Z0-9]*)\s+(notice|trip|station|detour)/i);
+    if (singleMatch) names.push(singleMatch[1].toUpperCase());
+  }
+
+  return [...new Set(names)];
+}
+
+function parseAffectedStopIds(description: string): string[] {
+  const ids: string[] = [];
+  // Pattern: "(#12999)" or "(# 12999)"
+  const re = /\(#\s*(\d+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(description)) !== null) ids.push(m[1]);
+  return [...new Set(ids)];
+}
+
+function parseAffectedDirections(text: string): string[] {
+  const dirs: string[] = [];
+  const re = /\b(eastbound|westbound|northbound|southbound)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) dirs.push(m[1].toLowerCase());
+  return [...new Set(dirs)];
+}
+
+function parseDelayMinutes(header: string): number | null {
+  const m = header.match(/up to\s+(\d+)\s+minute/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function parseAffectedTrips(description: string): string[] {
+  const times: string[] = [];
+  const re = /\b(\d{1,2}:\d{2}\s*(?:am|pm))\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(description)) !== null) times.push(m[1]);
+  return [...new Set(times)];
+}
+
+export function parseAlertMeta(header: string, description: string, effect: string | null): AlertMeta {
+  const fullText = `${header} ${description}`;
+  return {
+    type:               classifyAlertType(header, description, effect),
+    routeShortNames:    parseRouteShortNames(header),
+    affectedStopIds:    parseAffectedStopIds(description),
+    affectedDirections: parseAffectedDirections(fullText),
+    delayMinutes:       parseDelayMinutes(header),
+    affectedTrips:      parseAffectedTrips(description),
+  };
+}
+
+/**
+ * Returns true if an alert applies to the given route.
+ * Checks:
+ *  1. informedEntity.routeId match (GTFS internal ID)
+ *  2. Text-parsed short name match (catches alerts RTD doesn't tag with informedEntity)
+ */
+export function alertAppliesToRoute(alert: ServiceAlert, routeId: string, shortName: string): boolean {
+  if (alert.routeIds.includes(routeId)) return true;
+  if (alert.meta.routeShortNames.some((n) => n.toUpperCase() === shortName.toUpperCase())) return true;
+  return false;
+}
+
+/** Returns alerts for a route, sorted by severity then recency. */
+export function getAlertsForRoute(allAlerts: ServiceAlert[], routeId: string, shortName: string): ServiceAlert[] {
+  return allAlerts
+    .filter((a) => alertAppliesToRoute(a, routeId, shortName))
+    .sort((a, b) =>
+      alertTypePriority(b.meta.type) - alertTypePriority(a.meta.type) ||
+      b.updatedAt - a.updatedAt,
+    );
+}
+
+/** Union of all stop IDs affected by a set of alerts. */
+export function alertedStopIds(alerts: ServiceAlert[]): Set<string> {
+  const ids = new Set<string>();
+  for (const a of alerts) for (const id of a.meta.affectedStopIds) ids.add(id);
+  return ids;
+}
+
+/** Display label + colour for each alert type. */
+export const ALERT_TYPE_LABELS: Record<AlertType, { label: string; color: string; bg: string; border: string }> = {
+  cancellation: { label: 'Cancelled',    color: 'text-red-400',    bg: 'bg-red-500/10',    border: 'border-red-500/40' },
+  delay:        { label: 'Delays',       color: 'text-amber-400',  bg: 'bg-amber-500/10',  border: 'border-amber-500/40' },
+  detour:       { label: 'Detour',       color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/40' },
+  stop_closure: { label: 'Stop Closed',  color: 'text-red-400',    bg: 'bg-red-500/10',    border: 'border-red-500/40' },
+  stop_move:    { label: 'Stop Moved',   color: 'text-amber-400',  bg: 'bg-amber-500/10',  border: 'border-amber-500/40' },
+  elevator:     { label: 'Elevator Out', color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40' },
+  construction: { label: 'Construction', color: 'text-slate-400',  bg: 'bg-slate-500/10',  border: 'border-slate-500/40' },
+  notice:       { label: 'Notice',       color: 'text-slate-400',  bg: 'bg-slate-500/10',  border: 'border-slate-500/40' },
+};
+
 
 /**
  * Returns currently-active alerts that apply to the given route/stop/trip.
@@ -287,15 +455,19 @@ export function getActiveAlerts(
     .map((entity) => {
       const alert = entity.alert;
       const informed: any[] = alert.informedEntity || [];
+      const header = alert.headerText?.translation?.[0]?.text || alert.ttsHeaderText?.translation?.[0]?.text || 'Service Alert';
+      const description = alert.descriptionText?.translation?.[0]?.text || alert.ttsDescriptionText?.translation?.[0]?.text || '';
+      const effect = alert.effect && alert.effect !== 'UNKNOWN_EFFECT' ? alert.effect : null;
       return {
         id: entity.id,
-        header: alert.headerText?.translation?.[0]?.text || alert.ttsHeaderText?.translation?.[0]?.text || 'Service Alert',
-        description: alert.descriptionText?.translation?.[0]?.text || alert.ttsDescriptionText?.translation?.[0]?.text || '',
+        header,
+        description,
         routeIds: [...new Set(informed.map((ie) => ie.routeId).filter(Boolean))] as string[],
         cause: alert.cause && alert.cause !== 'UNKNOWN_CAUSE' ? alert.cause : null,
-        effect: alert.effect && alert.effect !== 'UNKNOWN_EFFECT' ? alert.effect : null,
+        effect,
         url: alert.url?.translation?.[0]?.text || null,
         updatedAt: Math.max(0, ...((alert.activePeriod || []) as any[]).map((p) => Number(p.start || 0)).filter((t) => t > 0), 0),
+        meta: parseAlertMeta(header, description, effect),
       };
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);

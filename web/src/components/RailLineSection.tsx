@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useRailLine, type LiveVehicle } from '../lib/useRailLine';
 import { getRailLines, getNearestRoutes, getRoutesServingStop, getNextScheduledDepartures, routeTypeLabel, type RailLineOption, type NearbyRoute, type RouteAtStop, type ScheduledArrival } from '../lib/schedule';
-import { getArrivalsForStop, getActiveAlerts, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
+import { getArrivalsForStop, getActiveAlerts, getAlertsForRoute, alertedStopIds, ALERT_TYPE_LABELS, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
 import { getDrivingRoute, type DrivingRoute } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
 import { loadSavedTrips, type SavedTrip } from '../lib/savedTrips';
@@ -270,11 +270,59 @@ function loadFavorites(): string[] {
   }
 }
 
+function LineAlertCard({ alert, onDismiss }: { alert: ServiceAlert; onDismiss: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const style = ALERT_TYPE_LABELS[alert.meta.type];
+  return (
+    <div className={`rounded-xl border p-3 ${style.bg} ${style.border}`}>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={`text-[10px] font-bold uppercase tracking-wider ${style.color}`}>{style.label}</span>
+            {alert.meta.affectedDirections.map((d) => (
+              <span key={d} className="rounded bg-slate-800/60 px-1 py-0.5 text-[10px] text-slate-400 capitalize">{d}</span>
+            ))}
+            {alert.meta.delayMinutes != null && (
+              <span className={`text-[10px] font-semibold ${style.color}`}>up to {alert.meta.delayMinutes} min</span>
+            )}
+          </div>
+          <p className={`mt-0.5 text-xs font-medium leading-snug ${style.color}`}>{alert.header}</p>
+          {expanded && alert.description && (
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{alert.description}</p>
+          )}
+          {expanded && alert.meta.affectedTrips.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              <span className="text-[10px] text-slate-500">Affected trips:</span>
+              {alert.meta.affectedTrips.map((t) => (
+                <span key={t} className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">{t}</span>
+              ))}
+            </div>
+          )}
+          {expanded && alert.meta.affectedStopIds.length > 0 && (
+            <p className="mt-1 text-[10px] text-slate-500">{alert.meta.affectedStopIds.length} stop{alert.meta.affectedStopIds.length !== 1 ? 's' : ''} affected — flagged in timeline below</p>
+          )}
+          {expanded && alert.url && (
+            <a href={alert.url} target="_blank" rel="noopener noreferrer" className={`mt-1 block text-xs underline ${style.color}`}>More info →</a>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {alert.description && (
+            <button type="button" onClick={() => setExpanded((e) => !e)} className="text-xs text-slate-400 hover:text-slate-200">
+              {expanded ? 'Less' : 'More'}
+            </button>
+          )}
+          <button type="button" onClick={onDismiss} className="text-slate-500 hover:text-slate-300" title="Dismiss">✕</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RailLineSection() {
   const [favorites, setFavorites] = useState<string[]>(loadFavorites);
   const [shortName, setShortName] = useState<string | null>(null);
   const [lines, setLines] = useState<RailLineOption[]>([]);
-  const { directions, arrivalsByStop, skippedStops, vehicleByTripId, vehicles, routeType, color, fare, transfersByStop, serviceToday, tripUpdates, alerts, lastUpdated, loading, error } =
+  const { routeId, directions, arrivalsByStop, skippedStops, vehicleByTripId, vehicles, routeType, color, fare, transfersByStop, serviceToday, tripUpdates, alerts, lastUpdated, loading, error } =
     useRailLine(shortName);
 
   const vehiclesByStop = useMemo(() => {
@@ -287,6 +335,28 @@ export default function RailLineSection() {
 
   const [selectedVehicleStop, setSelectedVehicleStop] = useState<string | null>(null);
   const activeAlerts: ServiceAlert[] = getActiveAlerts(alerts);
+
+  // Alerts scoped to the currently-selected line (text-parsed + informedEntity match).
+  const lineAlerts = useMemo(
+    () => (routeId && shortName) ? getAlertsForRoute(activeAlerts, routeId, shortName) : [],
+    [activeAlerts, routeId, shortName],
+  );
+  // Stop IDs that at least one line alert explicitly mentions.
+  const alertStopIds: Set<string> = useMemo(() => alertedStopIds(lineAlerts), [lineAlerts]);
+
+  // Per-route alert presence for the line picker badges.
+  // Build a map of shortName → has active alert, driven entirely by text parsing.
+  const alertedRoutes = useMemo(() => {
+    const m = new Set<string>();
+    for (const a of activeAlerts) {
+      for (const n of a.meta.routeShortNames) m.add(n.toUpperCase());
+    }
+    return m;
+  }, [activeAlerts]);
+
+  const [dismissedLineAlertIds, setDismissedLineAlertIds] = useState<Set<string>>(new Set());
+  const visibleLineAlerts = lineAlerts.filter((a) => !dismissedLineAlertIds.has(a.id));
+
   const [savedTrips] = useState<SavedTrip[]>(loadSavedTrips);
   const [activeOverlay, setActiveOverlay] = useState<'directions' | 'alerts' | 'plan' | 'settings' | null>(null);
   const [alertSearch, setAlertSearch] = useState('');
@@ -581,6 +651,7 @@ export default function RailLineSection() {
                     .filter((f) => lineOptions.some((l) => l.shortName === f))
                     .map((f) => {
                       const line = lineOptions.find((l) => l.shortName === f)!;
+                      const hasAlert = alertedRoutes.has(f.toUpperCase());
                       return (
                         <button
                           key={`fav-${f}`}
@@ -592,13 +663,17 @@ export default function RailLineSection() {
                           }}
                           className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-sm text-slate-300 hover:bg-slate-800"
                         >
-                          <span
-                            className="flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-bold text-slate-950"
-                            style={{ backgroundColor: line.color ?? '#38bdf8' }}
-                          >
-                            {f}
+                          <span className="relative shrink-0">
+                            <span
+                              className="flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-bold text-slate-950"
+                              style={{ backgroundColor: line.color ?? '#38bdf8' }}
+                            >
+                              {f}
+                            </span>
+                            {hasAlert && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-slate-900" />}
                           </span>
                           <span className="truncate">{line.routeType === 3 ? line.longName : `${f} Line`}</span>
+                          {hasAlert && <span className="ml-auto shrink-0 text-[10px] font-semibold text-amber-400">ALERT</span>}
                         </button>
                       );
                     })}
@@ -613,26 +688,33 @@ export default function RailLineSection() {
                   items.length > 0 && (
                     <div key={label}>
                       <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                      {items.map((line) => (
-                        <button
-                          key={line.shortName}
-                          type="button"
-                          onClick={() => {
-                            selectLine(line.shortName);
-                            setSearch('');
-                            setSearchOpen(false);
-                          }}
-                          className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-sm text-slate-300 hover:bg-slate-800"
-                        >
-                          <span
-                            className="flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-bold text-slate-950"
-                            style={{ backgroundColor: line.color ?? '#38bdf8' }}
+                      {items.map((line) => {
+                        const hasAlert = alertedRoutes.has(line.shortName.toUpperCase());
+                        return (
+                          <button
+                            key={line.shortName}
+                            type="button"
+                            onClick={() => {
+                              selectLine(line.shortName);
+                              setSearch('');
+                              setSearchOpen(false);
+                            }}
+                            className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-sm text-slate-300 hover:bg-slate-800"
                           >
-                            {line.shortName}
-                          </span>
-                          <span className="truncate">{suffix ? `${line.shortName}${suffix}` : `${line.shortName} — ${line.longName}`}</span>
-                        </button>
-                      ))}
+                            <span className="relative shrink-0">
+                              <span
+                                className="flex h-6 min-w-6 items-center justify-center rounded-full text-xs font-bold text-slate-950"
+                                style={{ backgroundColor: line.color ?? '#38bdf8' }}
+                              >
+                                {line.shortName}
+                              </span>
+                              {hasAlert && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-slate-900" />}
+                            </span>
+                            <span className="truncate">{suffix ? `${line.shortName}${suffix}` : `${line.shortName} — ${line.longName}`}</span>
+                            {hasAlert && <span className="ml-auto shrink-0 text-[10px] font-semibold text-amber-400">ALERT</span>}
+                          </button>
+                        );
+                      })}
                     </div>
                   ),
               )}
@@ -900,6 +982,19 @@ export default function RailLineSection() {
             )}
           </div>
 
+          {/* Line alert banner — shown above the timeline when this route has active alerts */}
+          {visibleLineAlerts.length > 0 && (
+            <div className="space-y-1.5">
+              {visibleLineAlerts.map((alert) => (
+                <LineAlertCard
+                  key={alert.id}
+                  alert={alert}
+                  onDismiss={() => setDismissedLineAlertIds((s) => new Set([...s, alert.id]))}
+                />
+              ))}
+            </div>
+          )}
+
           {/* Stop timeline — one direction at a time */}
           {!dir ? (
             <p className="text-sm text-slate-500">No stop data available.</p>
@@ -990,6 +1085,11 @@ export default function RailLineSection() {
                       >
                         <div className="min-w-0">
                           <span className={`truncate text-sm font-semibold ${expanded ? 'text-sky-300' : 'text-slate-100'}`}>{stop.stop_name}</span>
+                          {alertStopIds.has(stop.stop_id) && (
+                            <span className="ml-1.5 inline-flex items-center gap-0.5 rounded bg-amber-500/20 px-1 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-400" title="This stop is affected by an active alert">
+                              ⚠ Alert
+                            </span>
+                          )}
                           {transfersByStop[stop.stop_id]?.length > 0 && (
                             <span className="ml-2 text-xs font-semibold text-sky-400" title={`Connects to: ${transfersByStop[stop.stop_id].map((t) => t.routeLongName).join(', ')}`}>
                               ⇄ {transfersByStop[stop.stop_id].map((t) => t.routeShortName).join(', ')}
