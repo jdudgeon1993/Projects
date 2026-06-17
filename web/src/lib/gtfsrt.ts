@@ -258,6 +258,26 @@ export interface AlertMeta {
   delayMinutes: number | null;
   /** Specific trip times mentioned, e.g. ["8:08 am", "10:08 am"] */
   affectedTrips: string[];
+  /**
+   * Primary trip time from the header (the "Trip X:XX am" time), used for
+   * auto-expiry of cancellation alerts once that trip time passes today.
+   * null if no trip time found in the header.
+   */
+  primaryTripTime: string | null;
+  /**
+   * Station name parsed from the header, e.g. "Lincoln Station".
+   * Used to match station-level alerts (elevator, construction) to routes
+   * whose stop list contains that station name.
+   */
+  stationName: string | null;
+  /**
+   * Whether this alert can be permanently dismissed by the user.
+   * Urgent/feed-driven types (cancellation, delay, detour) should not be
+   * persistently dismissed — they disappear when RTD removes them from the feed.
+   * Long-running informational types (elevator, construction, notice, stop_move,
+   * stop_closure) can be dismissed until a new alert ID appears.
+   */
+  isDismissible: boolean;
 }
 
 // ─── Alert parsing ─────────────────────────────────────────────────────────────
@@ -348,34 +368,93 @@ function parseAffectedTrips(description: string): string[] {
   return [...new Set(times)];
 }
 
+/** Parse the primary trip time from the *header* (e.g. "Trip 9:23 am from ..."). */
+function parsePrimaryTripTime(header: string): string | null {
+  const m = header.match(/\bTrip\s+(\d{1,2}:\d{2}\s*(?:am|pm))\b/i);
+  return m ? m[1] : null;
+}
+
+/** Parse a station name from the header (e.g. "Lincoln Station East Elevator..."). */
+function parseStationName(header: string): string | null {
+  // Match "Anything Station" — one or more words before "Station"
+  const m = header.match(/\b([\w]+(?:\s+[\w]+)*\s+Station)\b/i);
+  return m ? m[1].trim() : null;
+}
+
+const DISMISSIBLE_TYPES: Set<AlertType> = new Set([
+  'elevator', 'construction', 'notice', 'stop_move', 'stop_closure',
+]);
+
 export function parseAlertMeta(header: string, description: string, effect: string | null): AlertMeta {
   const fullText = `${header} ${description}`;
+  const type = classifyAlertType(header, description, effect);
   return {
-    type:               classifyAlertType(header, description, effect),
+    type,
     routeShortNames:    parseRouteShortNames(header),
     affectedStopIds:    parseAffectedStopIds(description),
     affectedDirections: parseAffectedDirections(fullText),
     delayMinutes:       parseDelayMinutes(header),
     affectedTrips:      parseAffectedTrips(description),
+    primaryTripTime:    parsePrimaryTripTime(header),
+    stationName:        parseStationName(header),
+    isDismissible:      DISMISSIBLE_TYPES.has(type),
   };
 }
 
 /**
- * Returns true if an alert applies to the given route.
- * Checks:
- *  1. informedEntity.routeId match (GTFS internal ID)
- *  2. Text-parsed short name match (catches alerts RTD doesn't tag with informedEntity)
+ * Returns true if a cancellation alert with a primary trip time has already
+ * expired — the trip time has passed today (Mountain Time).
  */
-export function alertAppliesToRoute(alert: ServiceAlert, routeId: string, shortName: string): boolean {
+export function isCancellationExpired(alert: ServiceAlert): boolean {
+  if (alert.meta.type !== 'cancellation' || !alert.meta.primaryTripTime) return false;
+  const t = alert.meta.primaryTripTime.replace(/\s/g, '').toLowerCase();
+  const m = t.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
+  if (!m) return false;
+  let hours = parseInt(m[1], 10);
+  const mins  = parseInt(m[2], 10);
+  if (m[3] === 'pm' && hours !== 12) hours += 12;
+  if (m[3] === 'am' && hours === 12) hours = 0;
+
+  // Compare against current Mountain Time
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Denver' }));
+  const tripMinutes  = hours * 60 + mins;
+  const nowMinutes   = now.getHours() * 60 + now.getMinutes();
+  return nowMinutes > tripMinutes + 5; // 5-min grace so it doesn't vanish the moment it departs
+}
+
+/**
+ * Returns true if an alert applies to the given route.
+ * Checks in order:
+ *  1. informedEntity.routeId match (GTFS internal ID)
+ *  2. Text-parsed short name match
+ *  3. Station name match — alert mentions a station whose name appears in
+ *     the route's stop list (e.g. "Lincoln Station" elevator alert surfaces
+ *     on any rail line that stops at Lincoln Station)
+ */
+export function alertAppliesToRoute(
+  alert: ServiceAlert,
+  routeId: string,
+  shortName: string,
+  stopNames: string[] = [],
+): boolean {
   if (alert.routeIds.includes(routeId)) return true;
   if (alert.meta.routeShortNames.some((n) => n.toUpperCase() === shortName.toUpperCase())) return true;
+  if (alert.meta.stationName && stopNames.length > 0) {
+    const station = alert.meta.stationName.toLowerCase();
+    if (stopNames.some((s) => s.toLowerCase().includes(station))) return true;
+  }
   return false;
 }
 
 /** Returns alerts for a route, sorted by severity then recency. */
-export function getAlertsForRoute(allAlerts: ServiceAlert[], routeId: string, shortName: string): ServiceAlert[] {
+export function getAlertsForRoute(
+  allAlerts: ServiceAlert[],
+  routeId: string,
+  shortName: string,
+  stopNames: string[] = [],
+): ServiceAlert[] {
   return allAlerts
-    .filter((a) => alertAppliesToRoute(a, routeId, shortName))
+    .filter((a) => alertAppliesToRoute(a, routeId, shortName, stopNames))
     .sort((a, b) =>
       alertTypePriority(b.meta.type) - alertTypePriority(a.meta.type) ||
       b.updatedAt - a.updatedAt,
