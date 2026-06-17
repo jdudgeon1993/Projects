@@ -313,13 +313,15 @@ function classifyAlertType(header: string, description: string, effect: string |
 function parseRouteShortNames(header: string): string[] {
   const names: string[] = [];
 
-  // "Route 15L", "Route 17" — bus routes
+  // "Route 15L", "Route 17" — bus routes (single, at start)
   const busMatch = header.match(/^Route\s+([A-Z0-9]+)/i);
   if (busMatch) names.push(busMatch[1].toUpperCase());
 
-  // "W Line", "AB1 Line", "X Line"
-  const railLineMatch = header.match(/^([A-Z][A-Z0-9]*)\s+Line\b/i);
-  if (railLineMatch) names.push(railLineMatch[1].toUpperCase());
+  // All occurrences of "X Line", "AB1 Line" anywhere in the string.
+  // Handles "A Line, B Line and G Line experiencing..." correctly.
+  const railLineRe = /\b([A-Z][A-Z0-9]*)\s+Line\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = railLineRe.exec(header)) !== null) names.push(m[1].toUpperCase());
 
   // Named BRT / special services at start of header with no "Route" prefix
   // e.g. "JUMP detoured...", "SKIP 208 ...", "FLEX..."
@@ -328,8 +330,7 @@ function parseRouteShortNames(header: string): string[] {
     if (namedMatch) names.push(namedMatch[1].toUpperCase());
   }
 
-  // Rail line letter at the very start: "W Line" already caught above,
-  // but catch cases like "AB1 notice:" where there's no "Line" keyword
+  // Rail line letter at the very start: catch cases like "AB1 notice:"
   if (names.length === 0) {
     const singleMatch = header.match(/^([A-Z][A-Z0-9]*)\s+(notice|trip|station|detour)/i);
     if (singleMatch) names.push(singleMatch[1].toUpperCase());
