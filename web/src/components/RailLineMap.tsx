@@ -283,7 +283,7 @@ export default function RailLineMap({
 
     for (const dir of directions) {
       if (dir.stops.length === 0) continue;
-      const lineColor = routeColor ? `#${routeColor}` : DIR_COLORS[dir.directionId] ?? DIR_COLORS[0];
+      const lineColor = routeColor ?? DIR_COLORS[dir.directionId] ?? DIR_COLORS[0];
 
       const path: L.LatLngExpression[] = dir.shape.length > 1
         ? dir.shape.map((p) => [p.lat, p.lon])
