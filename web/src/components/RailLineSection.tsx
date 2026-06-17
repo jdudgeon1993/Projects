@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useRailLine, type LiveVehicle } from '../lib/useRailLine';
 import { getRailLines, getNearestRoutes, getRoutesServingStop, getNextScheduledDepartures, routeTypeLabel, type RailLineOption, type NearbyRoute, type RouteAtStop, type ScheduledArrival } from '../lib/schedule';
-import { getArrivalsForStop, getActiveAlerts, getAlertsForRoute, alertedStopIds, ALERT_TYPE_LABELS, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
+import { getArrivalsForStop, getActiveAlerts, getAlertsForRoute, alertedStopIds, isCancellationExpired, ALERT_TYPE_LABELS, type UpcomingArrival, type ServiceAlert } from '../lib/gtfsrt';
 import { getDrivingRoute, type DrivingRoute } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
 import { loadSavedTrips, type SavedTrip } from '../lib/savedTrips';
@@ -273,17 +273,27 @@ function loadFavorites(): string[] {
 function LineAlertCard({ alert, onDismiss }: { alert: ServiceAlert; onDismiss: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const style = ALERT_TYPE_LABELS[alert.meta.type];
+  // Feed-driven types (cancellation, delay, detour) disappear when RTD removes them —
+  // no persistent dismiss button. Dismissible types (elevator, construction, notice etc.)
+  // show the X button which persists to localStorage.
+  const showDismiss = alert.meta.isDismissible;
   return (
     <div className={`rounded-xl border p-3 ${style.bg} ${style.border}`}>
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={`text-[10px] font-bold uppercase tracking-wider ${style.color}`}>{style.label}</span>
+            {alert.meta.stationName && (
+              <span className="rounded bg-slate-800/60 px-1 py-0.5 text-[10px] text-slate-300">{alert.meta.stationName}</span>
+            )}
             {alert.meta.affectedDirections.map((d) => (
               <span key={d} className="rounded bg-slate-800/60 px-1 py-0.5 text-[10px] text-slate-400 capitalize">{d}</span>
             ))}
             {alert.meta.delayMinutes != null && (
               <span className={`text-[10px] font-semibold ${style.color}`}>up to {alert.meta.delayMinutes} min</span>
+            )}
+            {alert.meta.primaryTripTime && (
+              <span className="text-[10px] text-slate-400">Trip {alert.meta.primaryTripTime}</span>
             )}
           </div>
           <p className={`mt-0.5 text-xs font-medium leading-snug ${style.color}`}>{alert.header}</p>
@@ -311,7 +321,9 @@ function LineAlertCard({ alert, onDismiss }: { alert: ServiceAlert; onDismiss: (
               {expanded ? 'Less' : 'More'}
             </button>
           )}
-          <button type="button" onClick={onDismiss} className="text-slate-500 hover:text-slate-300" title="Dismiss">✕</button>
+          {showDismiss && (
+            <button type="button" onClick={onDismiss} className="text-slate-500 hover:text-slate-300" title="Dismiss">✕</button>
+          )}
         </div>
       </div>
     </div>
@@ -336,10 +348,15 @@ export default function RailLineSection() {
   const [selectedVehicleStop, setSelectedVehicleStop] = useState<string | null>(null);
   const activeAlerts: ServiceAlert[] = getActiveAlerts(alerts);
 
+  const stopNames = useMemo(
+    () => directions.flatMap((d) => d.stops.map((s) => s.stop_name)),
+    [directions],
+  );
+
   // Alerts scoped to the currently-selected line (text-parsed + informedEntity match).
   const lineAlerts = useMemo(
-    () => (routeId && shortName) ? getAlertsForRoute(activeAlerts, routeId, shortName) : [],
-    [activeAlerts, routeId, shortName],
+    () => (routeId && shortName) ? getAlertsForRoute(activeAlerts, routeId, shortName, stopNames) : [],
+    [activeAlerts, routeId, shortName, stopNames],
   );
   // Stop IDs that at least one line alert explicitly mentions.
   const alertStopIds: Set<string> = useMemo(() => alertedStopIds(lineAlerts), [lineAlerts]);
@@ -354,8 +371,23 @@ export default function RailLineSection() {
     return m;
   }, [activeAlerts]);
 
-  const [dismissedLineAlertIds, setDismissedLineAlertIds] = useState<Set<string>>(new Set());
-  const visibleLineAlerts = lineAlerts.filter((a) => !dismissedLineAlertIds.has(a.id));
+  const DISMISSED_ALERTS_KEY = 'nexus_dismissed_alerts';
+  const [dismissedLineAlertIds, setDismissedLineAlertIds] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_ALERTS_KEY) ?? '[]')); }
+    catch { return new Set(); }
+  });
+
+  function dismissAlert(id: string) {
+    setDismissedLineAlertIds((prev) => {
+      const next = new Set([...prev, id]);
+      localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  const visibleLineAlerts = lineAlerts.filter(
+    (a) => !dismissedLineAlertIds.has(a.id) && !isCancellationExpired(a),
+  );
 
   const [savedTrips] = useState<SavedTrip[]>(loadSavedTrips);
   const [activeOverlay, setActiveOverlay] = useState<'directions' | 'alerts' | 'plan' | 'settings' | null>(null);
@@ -989,7 +1021,7 @@ export default function RailLineSection() {
                 <LineAlertCard
                   key={alert.id}
                   alert={alert}
-                  onDismiss={() => setDismissedLineAlertIds((s) => new Set([...s, alert.id]))}
+                  onDismiss={() => dismissAlert(alert.id)}
                 />
               ))}
             </div>
