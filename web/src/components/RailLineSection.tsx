@@ -6,6 +6,7 @@ import { getDrivingRoute, type DrivingRoute } from '../lib/api';
 import { decodePolyline } from '../lib/polyline';
 import { loadSavedTrips, type SavedTrip } from '../lib/savedTrips';
 import { alertSeenKey, loadSeenAlerts, persistSeenAlerts } from '../lib/seenAlerts';
+import { updatePushRoutes } from '../lib/push';
 import BottomSheet from './BottomSheet';
 
 const TripPlanner = lazy(() => import('./TripPlanner'));
@@ -431,6 +432,9 @@ export default function RailLineSection() {
     setFavorites((prev) => {
       const next = prev.includes(name) ? prev.filter((f) => f !== name) : [...prev, name];
       localStorage.setItem(FAV_KEY, JSON.stringify(next));
+      // Sync push-notification subscription with the updated favorite routes.
+      // Fire-and-forget: don't block the UI on permission dialogs or network.
+      updatePushRoutes(next).catch(() => {});
       return next;
     });
   }
