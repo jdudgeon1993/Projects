@@ -71,19 +71,18 @@ function zoomScale(zoom: number): number {
  * Rail vehicles are slightly larger than buses.
  */
 function makeVehicleIcon(v: LiveVehicle, isRail: boolean, zoom: number): L.DivIcon {
-  const scale  = zoomScale(zoom);
-  const base   = isRail ? 28 : 22;
-  const size   = Math.round(base * scale);
-  const half   = size / 2;
+  const scale   = zoomScale(zoom);
+  const base    = isRail ? 28 : 22;
+  const size    = Math.round(base * scale);
+  const half    = size / 2;
   const bearing = v.bearing ?? 0;
   const stopped = v.status === 'STOPPED_AT';
+  const halted  = v.isStuck || (stopped && v.delaySeconds != null && v.delaySeconds > 600);
   const dc      = dirColor(v);
-  const rc      = delayColor(v);
+  const rc      = halted ? '#ef4444' : delayColor(v);
 
-  // SVG is drawn in a 0 0 24 24 viewBox, anchor at centre (12,12).
-  // The arrow chevron points "up" (north) and the whole SVG rotates to bearing.
   const pulseEl = stopped
-    ? `<circle class="vm-pulse" cx="12" cy="12" r="10" fill="${dc}" opacity="0.35"/>`
+    ? `<circle class="vm-pulse" cx="12" cy="12" r="10" fill="${halted ? '#ef4444' : dc}" opacity="0.35"/>`
     : '';
 
   const trainStripes = isRail
@@ -91,28 +90,43 @@ function makeVehicleIcon(v: LiveVehicle, isRail: boolean, zoom: number): L.DivIc
        <line x1="9" y1="13" x2="15" y2="13" stroke="white" stroke-width="1" opacity="0.35"/>`
     : '';
 
+  // Halted: replace the direction chevron with a pause/stop glyph and tint body red
+  const chevronOrStop = halted
+    ? `<rect x="8.5" y="7" width="2.5" height="10" rx="1" fill="white" opacity="0.92"/>
+       <rect x="13" y="7" width="2.5" height="10" rx="1" fill="white" opacity="0.92"/>`
+    : `<path d="M12,1 L17.5,11 L12,8.5 L6.5,11 Z" fill="white" opacity="0.92"/>`;
+
+  const bodyFill = halted ? '#dc2626' : dc;
+
+  // Delay label rendered below the marker (unrotated so text is always upright)
+  const delayMins = v.delaySeconds != null ? Math.round(v.delaySeconds / 60) : null;
+  const labelEl = halted && delayMins != null && delayMins > 0
+    ? `<text x="12" y="28" text-anchor="middle" font-size="7" font-weight="bold"
+             font-family="system-ui,sans-serif" fill="#ef4444"
+             style="transform:rotate(${-bearing}deg);transform-origin:12px 28px">
+         +${delayMins}m
+       </text>`
+    : '';
+
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg"
-     width="${size}" height="${size}"
-     viewBox="0 0 24 24"
+     width="${size}" height="${Math.round(size * 1.45)}"
+     viewBox="0 0 24 34"
      overflow="visible"
      style="transform:rotate(${bearing}deg);transform-origin:12px 12px;display:block;filter:drop-shadow(0 2px 4px rgba(0,0,0,.55))">
   ${pulseEl}
-  <!-- Delay ring -->
-  <circle cx="12" cy="12" r="11" fill="none" stroke="${rc}" stroke-width="2.2" opacity="0.9"/>
-  <!-- Body -->
-  <circle cx="12" cy="12" r="8" fill="${dc}"/>
-  <!-- Subtle inner gradient highlight -->
+  <circle cx="12" cy="12" r="11" fill="none" stroke="${rc}" stroke-width="${halted ? 3 : 2.2}" opacity="0.9"/>
+  <circle cx="12" cy="12" r="8" fill="${bodyFill}"/>
   <circle cx="10" cy="10" r="3.5" fill="white" opacity="0.12"/>
   ${trainStripes}
-  <!-- Direction chevron (arrow pointing north = up) -->
-  <path d="M12,1 L17.5,11 L12,8.5 L6.5,11 Z" fill="white" opacity="0.92"/>
+  ${chevronOrStop}
+  ${labelEl}
 </svg>`;
 
   return L.divIcon({
     html: svg,
     className: '',
-    iconSize:   [size, size],
+    iconSize:   [size, Math.round(size * 1.45)],
     iconAnchor: [half, half],
     tooltipAnchor: [half + 4, -half],
   });

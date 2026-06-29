@@ -16,6 +16,8 @@ export interface LiveVehicle {
   occupancyStatus?: string;
   occupancyPercentage?: number;
   feedTimestamp?: number; // unix seconds when this vehicle fix was recorded
+  // true when GPS fix hasn't advanced for 2+ consecutive polls (~60 s) AND delay > 5 min
+  isStuck?: boolean;
 }
 
 export interface DirectionInfo {
@@ -29,7 +31,7 @@ export interface DirectionInfo {
 }
 
 export function useRailLine(shortName: string | null) {
-  const { tripUpdates, vehiclePositions, alerts, lastUpdated, error, loading } = useGtfsRt();
+  const { tripUpdates, vehiclePositions, alerts, vehicleStuckPolls, lastUpdated, error, loading } = useGtfsRt();
   const [routeId, setRouteId] = useState<string | null>(null);
   const [routeType, setRouteType] = useState<number | null>(null);
   const [color, setColor] = useState<string | null>(null);
@@ -148,6 +150,7 @@ export function useRailLine(shortName: string | null) {
           start_time: v.trip?.startTime,
         });
 
+        const stuckPolls = vehicleStuckPolls.get(e.id) ?? 0;
         return {
           id: e.id,
           lat: v.position?.latitude,
@@ -161,9 +164,11 @@ export function useRailLine(shortName: string | null) {
           occupancyStatus: v.occupancyStatus && v.occupancyStatus !== 'NO_DATA_AVAILABLE' ? v.occupancyStatus : undefined,
           occupancyPercentage: v.occupancyPercentage,
           feedTimestamp: v.timestamp != null ? Number(v.timestamp) : undefined,
+          // Stuck = GPS fix frozen for 2+ polls (~60 s) AND delay significant
+          isStuck: stuckPolls >= 2 && delaySeconds != null && delaySeconds > 300,
         };
       });
-  }, [vehiclePositions, tripUpdates, routeId]);
+  }, [vehiclePositions, tripUpdates, routeId, vehicleStuckPolls]);
 
   const arrivalsByStop: Record<string, UpcomingArrival[]> = useMemo(
     () => getUpcomingArrivalsByStop(tripUpdates, effectiveRouteId ?? ''),

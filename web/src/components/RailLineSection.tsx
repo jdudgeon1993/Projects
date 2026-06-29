@@ -90,7 +90,7 @@ function formatClockTime(unixSeconds: number): string {
 type StopRole = 'origin' | 'destination' | 'middle';
 
 type PhaseName =
-  | 'SKIPPED' | 'AT_PLATFORM' | 'DEPARTING' | 'DEPARTED'
+  | 'SKIPPED' | 'HALTED' | 'AT_PLATFORM' | 'DEPARTING' | 'DEPARTED'
   | 'ARRIVED' | 'INCOMING' | 'ARRIVING'
   | 'SECONDS' | 'MINUTES_CLOSE' | 'MINUTES_MID' | 'MINUTES_FAR'
   | 'SCHEDULED' | 'NONE';
@@ -120,7 +120,26 @@ function computePhase(
   const current = pool[0] ?? null;
   const upcoming = pool.slice(1);
 
-  // 1. AT_PLATFORM — STOPPED_AT from vehicle feed (physical truth)
+  // 1a. HALTED — STOPPED_AT with significant delay OR position frozen across polls
+  if (stoppedVehicle && (stoppedVehicle.isStuck || (stoppedVehicle.delaySeconds != null && stoppedVehicle.delaySeconds > 600))) {
+    const matchedArrival = arrivals.find((a) => a.tripId === stoppedVehicle.tripId) ?? null;
+    if (arrivals.length === 0 || matchedArrival != null) {
+      const delayMins = stoppedVehicle.delaySeconds != null ? Math.round(stoppedVehicle.delaySeconds / 60) : null;
+      const sublabel = delayMins != null ? `+${delayMins} min late` : 'Delays reported';
+      return {
+        phase: 'HALTED',
+        label: 'Halted',
+        sublabel,
+        dotClass: 'border-red-500 bg-red-500/30',
+        labelClass: 'text-red-400',
+        animate: 'pulse',
+        current: matchedArrival ?? current,
+        upcoming,
+      };
+    }
+  }
+
+  // 1b. AT_PLATFORM — STOPPED_AT from vehicle feed (physical truth)
   if (stoppedVehicle) {
     // Match departure time to THIS vehicle's trip specifically — not pool[0] which may
     // have rolled over to the next train after the feed lags post-departure.
