@@ -327,7 +327,7 @@ app.post('/api/push/subscribe', async (req, res) => {
     return res.status(400).json({ error: 'endpoint, p256dh, and auth are required' });
   }
   try {
-    await supabaseRequest('POST', 'push_subscriptions', {
+    await supabaseRequest('POST', 'push_subscriptions?on_conflict=endpoint', {
       endpoint,
       p256dh,
       auth,
