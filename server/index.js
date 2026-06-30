@@ -382,7 +382,8 @@ function buildNotificationContent(header, routeNames) {
   let body = header;
   const patterns = routeNames.map((n) => `${n}\\s+Line`).join('|');
   const stripRe = new RegExp(`^((?:(?:${patterns})(?:,\\s*|\\s+and\\s+)*)*)`, 'i');
-  body = body.replace(stripRe, '').trim().replace(/^[,\\-–—]+\\s*/, '').trim();
+  // NOTE: these are real regex literals (not RegExp(string)), so escapes use a single backslash.
+  body = body.replace(stripRe, '').trim().replace(/^[,\-–—]+\s*/, '').trim();
   if (!body) body = header;
 
   return { subject, body };
@@ -391,31 +392,23 @@ function buildNotificationContent(header, routeNames) {
 // ---------------------------------------------------------------------------
 // Server-side alert poller — sends push notifications for new alerts
 // ---------------------------------------------------------------------------
-const GTFS_ALERTS_URL = 'https://www.rtd-denver.com/files/gtfs-rt/Alerts.pb';
 const ALERT_POLL_MS = 5 * 60 * 1000; // 5 minutes
 
-let seenAlertKeys = new Set(); // "routeId:alertId" pairs we've already notified
+// Alert ids we've already notified subscribers about. In-memory only — see
+// initializedSeenAlerts below for how we avoid re-notifying everyone on every
+// server restart/redeploy.
+let seenAlertKeys = new Set();
+let initializedSeenAlerts = false;
 let pushPollerReady = false;
 
-async function fetchAlertHeaders() {
-  // We need to decode protobuf alerts. We do this by proxying through our own
-  // existing /api/gtfs-rt endpoint to get raw bytes, then decode with protobuf.
-  // However, protobufjs is a frontend dependency. Instead, hit the RTD feed
-  // directly and use our own GTFS-RT proxy endpoint internally.
-  // Simplest: call our own proxy at localhost so we don't need protobufjs here.
-  const url = `http://localhost:${PORT}/api/gtfs-rt?feed=Alerts`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Alert proxy ${res.status}`);
-  return res.arrayBuffer();
-}
-
-async function decodeAlertsWithProxy() {
-  // We can't easily use protobufjs in CommonJS server without bundling it.
-  // Workaround: fetch the JSON-decoded version by calling our own protobuf proxy
-  // and decoding in the same way we do in the browser.
-  // Since we can't import ESM protobufjs here, we'll do a minimal binary parse
-  // of the GTFS-RT alerts protobuf just for alert id + header text.
-  const buf = Buffer.from(await fetchAlertHeaders());
+async function fetchAlerts() {
+  // We can't easily use protobufjs in CommonJS server without bundling it, so
+  // we do a minimal binary parse of the GTFS-RT alerts protobuf — just enough
+  // to extract alert id + header text. Fetched directly from RTD (not via our
+  // own /api/gtfs-rt proxy) to avoid an unnecessary self-HTTP round trip.
+  const res = await fetch(GTFS_RT_FEEDS.Alerts, { headers: { 'User-Agent': 'RTD-Transit-App/1.0' } });
+  if (!res.ok) throw new Error(`RTD alerts feed returned ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
   return parseGtfsRtAlerts(buf);
 }
 
@@ -571,30 +564,52 @@ async function pollAndNotify() {
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
 
   try {
-    const alerts = await decodeAlertsWithProxy();
+    const alerts = await fetchAlerts();
+    const relevantAlerts = alerts
+      .filter((a) => a.header)
+      .map((a) => ({ ...a, routeNames: parseRouteShortNamesFromHeader(a.header) }))
+      .filter((a) => a.routeNames.length > 0);
+
+    // First poll after a (re)start: just learn which alerts are already active
+    // without notifying — otherwise every redeploy would re-blast every
+    // currently-active alert to every subscriber as if it were brand new.
+    if (!initializedSeenAlerts) {
+      seenAlertKeys = new Set(relevantAlerts.map((a) => a.id));
+      initializedSeenAlerts = true;
+      console.log(`[push] Seeded ${seenAlertKeys.size} active alert(s) on startup — will notify only on new alerts from here.`);
+      return;
+    }
+
+    // Keep the seen-set bounded to currently-active alerts. This also means
+    // a cancellation that later re-appears (new id from RTD) is treated as new.
+    const currentIds = new Set(relevantAlerts.map((a) => a.id));
+    for (const id of seenAlertKeys) {
+      if (!currentIds.has(id)) seenAlertKeys.delete(id);
+    }
+
+    const newAlerts = relevantAlerts.filter((a) => !seenAlertKeys.has(a.id));
+    if (!newAlerts.length) return;
+
     const subscriptions = await getAllSubscriptions();
-    if (!subscriptions?.length) return;
+    if (!subscriptions?.length) {
+      newAlerts.forEach((a) => seenAlertKeys.add(a.id));
+      return;
+    }
 
-    for (const alert of alerts) {
-      if (!alert.header) continue;
-      const routeNames = parseRouteShortNamesFromHeader(alert.header);
-      if (!routeNames.length) continue;
+    for (const alert of newAlerts) {
+      seenAlertKeys.add(alert.id);
 
-      for (const routeName of routeNames) {
-        const key = `${routeName}:${alert.id}`;
-        if (seenAlertKeys.has(key)) continue;
-        seenAlertKeys.add(key);
+      // One notification per device, even when the alert spans multiple
+      // routes the device has favorited (e.g. "A, B Line Alert" instead of
+      // two separate pushes).
+      const targets = subscriptions.filter(
+        (s) => s.route_short_names && alert.routeNames.some((r) => s.route_short_names.includes(r))
+      );
+      if (!targets.length) continue;
 
-        // Find subscribers who have this route favorited
-        const targets = subscriptions.filter(
-          (s) => s.route_short_names && s.route_short_names.includes(routeName)
-        );
-        if (!targets.length) continue;
-
-        const { subject, body } = buildNotificationContent(alert.header, [routeName]);
-        console.log(`[push] Notifying ${targets.length} device(s): "${subject}"`);
-        await sendPushToSubscribers(targets, subject, body);
-      }
+      const { subject, body } = buildNotificationContent(alert.header, alert.routeNames);
+      console.log(`[push] Notifying ${targets.length} device(s): "${subject}"`);
+      await sendPushToSubscribers(targets, subject, body);
     }
   } catch (e) {
     console.error('[push] pollAndNotify error:', e);
@@ -604,6 +619,16 @@ async function pollAndNotify() {
 function startPushPoller() {
   if (pushPollerReady) return;
   pushPollerReady = true;
+
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+    console.warn('[push] VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set — push notifications disabled.');
+    return;
+  }
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('[push] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — push notifications disabled.');
+    return;
+  }
+
   // Initial delay: 30 s after boot (allow server to fully start + subscribe)
   setTimeout(() => {
     pollAndNotify();
@@ -614,10 +639,15 @@ function startPushPoller() {
 // ---------------------------------------------------------------------------
 // Push test endpoint (dev/debug only)
 // ---------------------------------------------------------------------------
+const PUSH_TEST_SECRET = process.env.PUSH_TEST_SECRET;
+
 app.post('/api/push/test', async (req, res) => {
-  const { route = 'N' } = req.body || {};
+  const { route = 'N', secret } = req.body || {};
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
     return res.status(503).json({ error: 'VAPID keys not configured' });
+  }
+  if (PUSH_TEST_SECRET && secret !== PUSH_TEST_SECRET) {
+    return res.status(403).json({ error: 'Invalid or missing secret' });
   }
   try {
     const subscriptions = await getAllSubscriptions();

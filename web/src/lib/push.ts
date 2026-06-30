@@ -59,9 +59,16 @@ export async function updatePushRoutes(routeShortNames: string[]): Promise<void>
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
+
+  if (routeShortNames.length === 0) {
+    // No favorites left — tear down the subscription entirely instead of
+    // leaving a dangling row with an empty route list in Supabase.
+    if (sub) await unsubscribeFromPush();
+    return;
+  }
+
   if (!sub) {
-    // No existing subscription — create one if there are routes
-    if (routeShortNames.length > 0) await subscribeToPush(routeShortNames);
+    await subscribeToPush(routeShortNames);
     return;
   }
   const { endpoint, keys } = sub.toJSON() as { endpoint: string; keys: { p256dh: string; auth: string } };
