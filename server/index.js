@@ -612,6 +612,34 @@ function startPushPoller() {
 }
 
 // ---------------------------------------------------------------------------
+// Push test endpoint (dev/debug only)
+// ---------------------------------------------------------------------------
+app.post('/api/push/test', async (req, res) => {
+  const { route = 'N' } = req.body || {};
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+    return res.status(503).json({ error: 'VAPID keys not configured' });
+  }
+  try {
+    const subscriptions = await getAllSubscriptions();
+    const targets = subscriptions.filter(
+      (s) => s.route_short_names && s.route_short_names.includes(route.toUpperCase())
+    );
+    if (!targets.length) {
+      return res.json({ sent: 0, message: `No subscriptions found for route ${route}` });
+    }
+    await sendPushToSubscribers(
+      targets,
+      `${route.toUpperCase()} Line Alert`,
+      `Test notification — ${route.toUpperCase()} Line experiencing up to 10 minute delays due to switch problem at Peoria Station.`
+    );
+    res.json({ sent: targets.length, route: route.toUpperCase() });
+  } catch (e) {
+    console.error('push/test error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Static frontend
 // ---------------------------------------------------------------------------
 const webDist = path.join(__dirname, '..', 'web', 'dist');
