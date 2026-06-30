@@ -654,6 +654,25 @@ export default function RailLineSection() {
               {favorites.includes(shortName) ? '★' : '☆'}
             </button>
           )}
+          {shortName != null && favorites.includes(shortName) && (
+            <button
+              type="button"
+              title="Send test push notification"
+              onClick={() =>
+                fetch('/api/push/test', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ route: shortName }),
+                })
+                  .then((r) => r.json())
+                  .then((d) => alert(d.sent > 0 ? `Test notification sent to ${d.sent} device(s)!` : d.message))
+                  .catch(() => alert('Failed to send test notification'))
+              }
+              className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm hover:bg-slate-700"
+            >
+              🔔
+            </button>
+          )}
           {activeAlerts.length > 0 && (
             <button
               type="button"
