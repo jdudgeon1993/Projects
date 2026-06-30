@@ -668,9 +668,9 @@ export default function RailLineSection() {
                   .then((d) => alert(d.sent > 0 ? `Test notification sent to ${d.sent} device(s)!` : d.message))
                   .catch(() => alert('Failed to send test notification'))
               }
-              className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm hover:bg-slate-700"
+              className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs hover:bg-slate-700"
             >
-              🔔
+              TEST
             </button>
           )}
           {activeAlerts.length > 0 && (
