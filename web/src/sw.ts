@@ -32,7 +32,7 @@ self.addEventListener('push', (event) => {
   const options: NotificationOptions = {
     body: data.body ?? '',
     icon: data.icon ?? '/pwa-192x192.png',
-    badge: '/pwa-192x192.png',
+    badge: '/badge-96x96.png',
     tag: title, // collapse duplicate alerts with the same title
   };
   event.waitUntil(self.registration.showNotification(title, options));

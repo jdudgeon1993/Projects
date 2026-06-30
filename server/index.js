@@ -540,7 +540,7 @@ function parseGtfsRtAlerts(buf) {
 }
 
 async function sendPushToSubscribers(subscriptions, title, body) {
-  const payload = JSON.stringify({ title, body, icon: '/pwa-192x192.png', badge: '/pwa-192x192.png' });
+  const payload = JSON.stringify({ title, body, icon: '/pwa-192x192.png', badge: '/badge-96x96.png' });
   const results = await Promise.allSettled(
     subscriptions.map((sub) =>
       webpush.sendNotification(
