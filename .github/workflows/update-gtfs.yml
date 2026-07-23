@@ -9,6 +9,7 @@ on:
 jobs:
   update-gtfs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -21,12 +22,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests supabase
+          pip install -r requirements.txt
 
       - name: Download and import GTFS data
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python scripts/rtd_import.py
 
       - name: Log completion

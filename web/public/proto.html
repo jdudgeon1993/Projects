@@ -1,0 +1,1015 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nexus Proto v3 — Swipeable Card + FAB Overlays</title>
+<style>
+  :root {
+    --slate-950: #020617;
+    --slate-900: #0f172a;
+    --slate-800: #1e293b;
+    --slate-700: #334155;
+    --slate-600: #475569;
+    --slate-500: #64748b;
+    --slate-400: #94a3b8;
+    --slate-300: #cbd5e1;
+    --slate-100: #f1f5f9;
+
+    --sky-500: #0ea5e9;
+    --sky-400: #38bdf8;
+    --purple-400: #c084fc;
+    --emerald-400: #34d399;
+    --emerald-500: #10b981;
+    --amber-400: #fbbf24;
+    --amber-500: #f59e0b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #000;
+    color: var(--slate-100);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 32px;
+    flex-wrap: wrap;
+    padding: 24px;
+  }
+
+  .phone-wrap { position: relative; }
+  .phone-label {
+    position: absolute;
+    top: -28px; left: 0;
+    font-size: 12px; font-weight: 700;
+    color: var(--slate-400);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .phone {
+    width: 390px;
+    height: 844px;
+    border-radius: 36px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 0 8px var(--slate-800), 0 20px 60px rgba(0,0,0,.6);
+    display: flex;
+    flex-direction: column;
+    background: var(--slate-950);
+  }
+
+  /* ===== App header ===== */
+  .app-header {
+    flex-shrink: 0;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--slate-800);
+    background: rgba(15,23,42,.6);
+    backdrop-filter: blur(8px);
+    z-index: 30;
+  }
+  .app-header h1 { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; margin: 0; }
+  .app-header .weather { font-size: 13px; color: var(--slate-300); display: flex; align-items: center; gap: 5px; }
+
+  /* ===== Map ===== */
+  .map-area {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 25% 20%, rgba(30,41,59,.9), transparent 55%),
+      radial-gradient(circle at 80% 70%, rgba(30,41,59,.7), transparent 50%),
+      repeating-linear-gradient(0deg, rgba(148,163,184,.05) 0 1px, transparent 1px 44px),
+      repeating-linear-gradient(90deg, rgba(148,163,184,.05) 0 1px, transparent 1px 44px),
+      var(--slate-950);
+  }
+  .route-line {
+    position: absolute;
+    left: 14%; top: 10%; width: 72%; height: 80%;
+    border: 4px solid var(--slate-700);
+    border-radius: 35% 65% 60% 40% / 50% 40% 60% 50%;
+    transform: rotate(-6deg);
+    opacity: .55;
+    transition: border-color .4s ease, opacity .4s ease, filter .4s ease;
+  }
+  .route-line.dir1 {
+    border-color: var(--purple-400);
+    border-style: dashed;
+    transform: rotate(-6deg) scale(.92);
+    opacity: .25;
+  }
+  .map-area.selected .route-line { border-color: var(--sky-400); opacity: .9; filter: drop-shadow(0 0 8px rgba(56,189,248,.45)); }
+  .map-area.selected .route-line.dir1 { opacity: .55; }
+  .map-area.selected.dir1-active .route-line { border-color: var(--slate-700); opacity: .35; filter: none; }
+  .map-area.selected.dir1-active .route-line.dir1 { border-color: var(--purple-400); opacity: .9; filter: drop-shadow(0 0 8px rgba(192,132,252,.45)); }
+
+  .map-stop {
+    position: absolute;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--slate-600);
+    border: 2px solid var(--slate-950);
+    transition: background .3s ease, transform .3s ease, box-shadow .3s ease;
+    cursor: pointer;
+  }
+  .map-area.selected .map-stop { background: var(--sky-400); }
+  .map-area.selected.dir1-active .map-stop { background: var(--purple-400); }
+  .map-stop .stop-tip {
+    position: absolute;
+    bottom: 14px; left: 50%; transform: translateX(-50%);
+    background: rgba(15,23,42,.9);
+    border: 1px solid var(--slate-700);
+    border-radius: 6px;
+    padding: 2px 6px; font-size: 9px; white-space: nowrap;
+    color: var(--slate-300);
+    opacity: 0;
+    transition: opacity .2s ease;
+    pointer-events: none;
+  }
+  .map-area.selected .map-stop .stop-tip { opacity: 1; }
+
+  .vehicle-marker {
+    position: absolute;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--sky-400);
+    border: 2px solid var(--slate-950);
+    box-shadow: 0 0 0 6px rgba(56,189,248,.25);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px;
+    opacity: 0;
+    transform: scale(.5);
+    transition: opacity .4s ease .15s, transform .4s ease .15s, left 1.2s ease, top 1.2s ease, background .3s ease, box-shadow .3s ease;
+  }
+  .vehicle-marker.dir1 { background: var(--purple-400); box-shadow: 0 0 0 6px rgba(192,132,252,.25); }
+  .map-area.selected .vehicle-marker { opacity: 1; transform: scale(1); }
+
+  /* Phase 1 search */
+  .map-search-wrap {
+    position: absolute;
+    top: 12px; left: 12px; right: 12px;
+    z-index: 20;
+    transition: opacity .3s ease, transform .3s ease;
+  }
+  .sheet-up .map-search-wrap { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+  .map-search {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(15,23,42,.85);
+    border: 1px solid var(--slate-700);
+    backdrop-filter: blur(10px);
+    border-radius: 14px;
+    padding: 11px 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  }
+  .map-search input { flex: 1; background: none; border: none; outline: none; color: var(--slate-100); font-size: 14px; }
+  .map-search input::placeholder { color: var(--slate-500); }
+
+  .alert-badge {
+    position: absolute;
+    top: 16px; right: 16px;
+    z-index: 25;
+    background: rgba(245,158,11,.18);
+    border: 1px solid var(--amber-500);
+    color: var(--amber-400);
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; gap: 4px;
+    cursor: pointer;
+    transition: opacity .3s ease, transform .3s ease;
+  }
+  .sheet-up .alert-badge { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+
+  .quick-results {
+    margin-top: 8px;
+    background: rgba(15,23,42,.92);
+    border: 1px solid var(--slate-700);
+    backdrop-filter: blur(10px);
+    border-radius: 14px;
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height .25s ease;
+  }
+  .quick-results.open { max-height: 260px; }
+  .quick-result { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--slate-800); cursor: pointer; }
+  .quick-result:last-child { border-bottom: none; }
+  .quick-result:hover { background: rgba(56,189,248,.08); }
+  .quick-result .pill { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; color: #02131f; flex-shrink: 0; }
+  .quick-result .info { min-width: 0; }
+  .quick-result .name { font-size: 13px; font-weight: 600; color: var(--slate-100); }
+  .quick-result .desc { font-size: 11px; color: var(--slate-500); }
+
+  /* ===== Bottom sheet ===== */
+  .sheet {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    border-radius: 20px 20px 0 0;
+    border-top: 1px solid var(--slate-800);
+    background: rgba(15,23,42,.96);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 -8px 30px rgba(0,0,0,.45);
+    transition: height .35s cubic-bezier(.32,.72,0,1);
+    height: 14%;
+  }
+  .sheet.snap-mid { height: 52%; }
+  .sheet.snap-full { height: 92%; }
+
+  .sheet-handle { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 0 0; cursor: pointer; }
+  .sheet-handle .grip { width: 36px; height: 4px; border-radius: 999px; background: var(--slate-600); }
+
+  .sheet-empty-hint { font-size: 12px; color: var(--slate-500); text-align: center; padding: 10px 16px; }
+
+  /* ===== Swipeable direction card (THE header for phase 2/3) ===== */
+  .route-card-wrap {
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    margin: 8px 14px 10px 14px;
+    border-radius: 14px;
+  }
+  .route-card-track {
+    display: flex;
+    transition: transform .3s cubic-bezier(.32,.72,0,1);
+    touch-action: pan-y;
+  }
+  .route-card {
+    flex: 0 0 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--slate-700);
+    border-radius: 14px;
+    cursor: grab;
+    user-select: none;
+  }
+  .route-card.dir0 { background: linear-gradient(135deg, rgba(56,189,248,.16), rgba(15,23,42,.4)); border-color: rgba(56,189,248,.4); }
+  .route-card.dir1 { background: linear-gradient(135deg, rgba(192,132,252,.16), rgba(15,23,42,.4)); border-color: rgba(192,132,252,.4); }
+  .route-card .pill {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px; color: #02131f; flex-shrink: 0;
+  }
+  .route-card .meta { flex: 1; min-width: 0; }
+  .route-card .meta .title { font-size: 14.5px; font-weight: 700; }
+  .route-card .meta .sub { font-size: 11px; color: var(--slate-400); margin-top: 1px; }
+  .route-card .swipe-hint { font-size: 16px; color: var(--slate-500); flex-shrink: 0; }
+  .route-card .close-btn {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 1px solid var(--slate-700);
+    background: rgba(148,163,184,.08);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--slate-300); font-size: 12px; flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .card-dots { display: flex; justify-content: center; gap: 5px; margin-top: 6px; }
+  .card-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--slate-700); transition: background .2s ease, width .2s ease; }
+  .card-dot.active.dot0 { background: var(--sky-400); width: 16px; border-radius: 3px; }
+  .card-dot.active.dot1 { background: var(--purple-400); width: 16px; border-radius: 3px; }
+
+  /* search-in-timeline row */
+  .timeline-search-wrap {
+    flex-shrink: 0;
+    padding: 0 14px 8px 14px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .2s ease;
+  }
+  .timeline-search-wrap.open { max-height: 50px; }
+  .timeline-search-wrap input {
+    width: 100%;
+    background: var(--slate-800);
+    border: 1px solid var(--slate-700);
+    border-radius: 10px;
+    padding: 9px 10px;
+    color: var(--slate-100);
+    font-size: 13px;
+    outline: none;
+  }
+  .timeline-search-wrap input:focus { border-color: var(--sky-500); }
+
+  .toolbar {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 14px 6px 14px;
+  }
+  .toolbar .icon-btn {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--slate-700);
+    background: var(--slate-800);
+    color: var(--slate-400);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .toolbar .icon-btn.active { border-color: var(--sky-500); color: var(--sky-400); background: rgba(56,189,248,.12); }
+
+  /* ===== Timeline (the only content) ===== */
+  .sheet-content { flex: 1; overflow-y: auto; padding: 0 14px 90px 14px; }
+  .timeline { position: relative; padding-left: 26px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 9px; top: 8px; bottom: 8px;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--sky-400), var(--purple-400));
+    opacity: .35;
+    border-radius: 2px;
+  }
+  .stop-row { position: relative; padding-bottom: 14px; }
+  .stop-row:last-child { padding-bottom: 0; }
+  .stop-row::before {
+    content: '';
+    position: absolute;
+    left: -22px; top: 4px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--slate-950);
+    border: 2px solid var(--sky-400);
+    transition: border-color .3s ease;
+  }
+  .dir1-active .stop-row::before { border-color: var(--purple-400); }
+  .stop-row.train-here::before { background: var(--sky-400); box-shadow: 0 0 0 4px rgba(56,189,248,.25); }
+  .dir1-active .stop-row.train-here::before { background: var(--purple-400); box-shadow: 0 0 0 4px rgba(192,132,252,.25); }
+  .stop-row.hidden { display: none; }
+  .stop-row.skipped .stop-card { opacity: .45; }
+  .stop-row.skipped .stop-name::after { content: ' · skipped'; font-size: 10px; color: var(--amber-400); font-weight: 400; }
+
+  .stop-card {
+    background: rgba(30,41,59,.6);
+    border: 1px solid var(--slate-800);
+    border-radius: 12px;
+    padding: 9px 10px;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, outline .15s ease;
+  }
+  .stop-card:hover { border-color: var(--slate-600); }
+  .stop-card.expanded { border-color: var(--sky-500); background: rgba(56,189,248,.06); }
+  .stop-card.search-match { outline: 2px solid var(--sky-500); outline-offset: -1px; }
+
+  .stop-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .stop-name { font-size: 13.5px; font-weight: 600; }
+  .stop-name .accessible { color: var(--slate-500); font-size: 11px; font-weight: 400; margin-left: 4px; }
+  .stop-time { text-align: right; flex-shrink: 0; }
+  .stop-time .countdown { font-size: 14px; font-weight: 800; }
+  .countdown.on-time { color: var(--emerald-400); }
+  .countdown.late { color: var(--amber-400); }
+  .countdown.early { color: var(--sky-400); }
+  .stop-time .clock { font-size: 10px; color: var(--slate-500); }
+  .stop-sub { margin-top: 3px; font-size: 11px; color: var(--slate-400); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .stop-sub .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-400); display: inline-block; box-shadow: 0 0 0 3px rgba(52,211,153,.2); }
+  .stop-sub .next-trains { color: var(--slate-500); }
+
+  .transfers { margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }
+  .badge-pill { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 800; color: #02131f; flex-shrink: 0; }
+  .badge-pill.bus { border-radius: 6px; width: auto; min-width: 22px; padding: 0 5px; background: var(--slate-500); color: var(--slate-100); font-weight: 700; font-size: 10px; }
+
+  .expand-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--slate-800); font-size: 11.5px; color: var(--slate-300); display: none; }
+  .stop-card.expanded .expand-detail { display: block; }
+  .expand-detail .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .expand-detail .row span:first-child { color: var(--slate-500); }
+
+  /* ===== FAB ===== */
+  .fab-wrap {
+    position: absolute;
+    right: 16px; bottom: 18px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+    z-index: 50;
+  }
+  .fab-menu {
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    opacity: 0; transform: translateY(8px) scale(.95); pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+  }
+  .fab-wrap.open .fab-menu { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  .fab-item {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--slate-900);
+    border: 1px solid var(--slate-700);
+    border-radius: 999px;
+    padding: 8px 14px 8px 8px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.4);
+    cursor: pointer;
+  }
+  .fab-item .icon { width: 30px; height: 30px; border-radius: 50%; background: rgba(148,163,184,.12); display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .fab-item .lbl { font-size: 12.5px; font-weight: 600; color: var(--slate-100); white-space: nowrap; }
+  .fab-item.alerts .icon { background: rgba(245,158,11,.18); color: var(--amber-400); }
+  .fab-item.alerts .lbl { color: var(--amber-400); }
+  .fab-main {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: var(--sky-500); color: var(--slate-950);
+    border: none; font-size: 22px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 18px rgba(14,165,233,.4);
+    transition: transform .2s ease;
+    cursor: pointer;
+  }
+  .fab-wrap.open .fab-main { transform: rotate(45deg); background: var(--slate-800); color: var(--slate-100); border: 1px solid var(--slate-700); }
+
+  .updated-pill {
+    position: absolute;
+    left: 14px; bottom: 18px;
+    font-size: 10px; color: var(--slate-500);
+    background: rgba(15,23,42,.7);
+    border: 1px solid var(--slate-800);
+    border-radius: 999px;
+    padding: 4px 10px;
+    backdrop-filter: blur(6px);
+    z-index: 20;
+  }
+
+  /* ===== Full-screen overlays (Directions / Alerts / Plan / Settings) ===== */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    background: var(--slate-950);
+    display: flex;
+    flex-direction: column;
+    transform: translateY(100%);
+    transition: transform .3s cubic-bezier(.32,.72,0,1);
+  }
+  .overlay.open { transform: translateY(0); }
+  .overlay-header {
+    flex-shrink: 0;
+    height: 52px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--slate-800);
+    background: rgba(15,23,42,.8);
+    backdrop-filter: blur(8px);
+  }
+  .overlay-header .back-btn {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 1px solid var(--slate-700);
+    background: rgba(148,163,184,.08);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--slate-100); font-size: 15px; cursor: pointer; flex-shrink: 0;
+  }
+  .overlay-header h2 { font-size: 15px; font-weight: 700; margin: 0; }
+  .overlay-content { flex: 1; overflow-y: auto; padding: 14px; }
+
+  /* Alerts overlay content */
+  .alert-search { width: 100%; background: var(--slate-800); border: 1px solid var(--slate-700); border-radius: 10px; padding: 9px 10px; color: var(--slate-100); font-size: 13px; margin-bottom: 8px; outline: none; }
+  .alert-search:focus { border-color: var(--sky-500); }
+  .cat-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .cat-pill { font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--slate-700); background: var(--slate-800); color: var(--slate-400); cursor: pointer; }
+  .cat-pill.active { border-color: var(--amber-500); background: rgba(245,158,11,.15); color: var(--amber-400); }
+  .alert-card { border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.08); border-radius: 12px; padding: 10px; margin-bottom: 8px; }
+  .alert-card .head { font-size: 12.5px; font-weight: 700; color: #fcd34d; }
+  .alert-card .route-tag { display: inline-block; margin-bottom: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border: 1px solid rgba(245,158,11,.5); background: rgba(245,158,11,.18); color: var(--amber-400); border-radius: 999px; padding: 2px 8px; cursor: pointer; }
+  .alert-card .desc { font-size: 11.5px; color: rgba(252,211,77,.8); margin-top: 4px; }
+
+  /* Directions overlay content */
+  .dir-panel input { width: 100%; background: var(--slate-800); border: 1px solid var(--slate-700); border-radius: 10px; padding: 9px 10px; color: var(--slate-100); font-size: 13px; margin-bottom: 8px; outline: none; }
+  .dir-panel input:focus { border-color: var(--sky-500); }
+  .dir-panel .go-btn { width: 100%; background: var(--sky-500); color: var(--slate-950); border: none; border-radius: 10px; padding: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
+  .dir-result { margin-top: 12px; background: rgba(30,41,59,.6); border: 1px solid var(--slate-800); border-radius: 12px; padding: 10px; font-size: 12.5px; color: var(--slate-300); }
+  .dir-result .leg { display: flex; justify-content: space-between; padding: 4px 0; }
+  .dir-result .leg b { color: var(--slate-100); }
+
+  /* Settings/Plan placeholder */
+  .placeholder-panel { color: var(--slate-400); font-size: 13px; text-align: center; padding: 60px 20px; }
+  .placeholder-panel .big { font-size: 40px; margin-bottom: 10px; }
+
+  /* notes */
+  .notes {
+    width: 360px; max-height: 844px; overflow-y: auto;
+    background: var(--slate-900);
+    border: 1px solid var(--slate-700);
+    border-radius: 16px;
+    padding: 18px;
+    font-size: 12.5px; line-height: 1.65; color: var(--slate-400);
+  }
+  .notes h3 { color: var(--slate-100); margin: 0 0 6px 0; font-size: 16px; }
+  .notes h4 { color: var(--slate-100); margin: 14px 0 4px 0; font-size: 13px; }
+  .notes code { color: var(--sky-400); }
+  .notes ul { margin: 4px 0; padding-left: 18px; }
+  @media (max-width: 800px) { .notes { display: none; } }
+</style>
+</head>
+<body>
+
+<div class="phone-wrap">
+  <div class="phone-label">Swipe the route card for direction · search icon for inline filter · FAB for everything else</div>
+  <div class="phone">
+    <div class="app-header">
+      <h1>RTD Transit Nexus</h1>
+      <span class="weather">☀️ 78°F</span>
+    </div>
+
+    <div class="map-area" id="mapArea">
+      <div class="route-line" id="routeLine0"></div>
+      <div class="route-line dir1" id="routeLine1"></div>
+      <div class="map-stop" id="stopUnion" style="left:22%; top:18%;"><span class="stop-tip">Union Station</span></div>
+      <div class="map-stop" id="stopPeoria" style="left:55%; top:42%;"><span class="stop-tip">Peoria</span></div>
+      <div class="map-stop" id="stopAirport" style="left:78%; top:68%;"><span class="stop-tip">Denver Airport</span></div>
+      <div class="vehicle-marker" id="veh0" style="left:35%; top:27%;">🚆</div>
+      <div class="vehicle-marker dir1" id="veh1" style="left:66%; top:55%;">🚆</div>
+
+      <div class="map-search-wrap">
+        <div class="map-search">
+          <span>🔍</span>
+          <input type="text" id="mapSearch" placeholder="Search a route, stop, or direction…" />
+        </div>
+        <div class="quick-results" id="quickResults">
+          <div class="quick-result" data-route="A" data-dir="0">
+            <div class="pill" style="background:var(--sky-400)">A</div>
+            <div class="info"><div class="name">A Line · To Denver Airport</div><div class="desc">Union Station ↔ Denver Airport · $10.00</div></div>
+          </div>
+          <div class="quick-result" data-route="A" data-dir="1">
+            <div class="pill" style="background:var(--purple-400)">A</div>
+            <div class="info"><div class="name">A Line · To Union Station</div><div class="desc">Denver Airport ↔ Union Station · $10.00</div></div>
+          </div>
+          <div class="quick-result" data-route="15L" data-dir="0">
+            <div class="pill" style="background:#f472b6">15L</div>
+            <div class="info"><div class="name">Route 15L · To Downtown</div><div class="desc">Federal &amp; Colfax ↔ Union Station</div></div>
+          </div>
+          <div class="quick-result" data-route="A" data-dir="0" data-stop="peoria">
+            <div class="pill" style="background:var(--slate-600)">📍</div>
+            <div class="info"><div class="name">Peoria Station</div><div class="desc">A Line · transfers to N, 88, 105</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="alert-badge" id="alertBadge">⚠️ 3</div>
+    </div>
+
+    <!-- Bottom sheet -->
+    <div class="sheet" id="sheet">
+      <div class="sheet-handle" id="sheetHandle">
+        <div class="grip"></div>
+      </div>
+
+      <div id="emptyState">
+        <div class="sheet-empty-hint">Search above or tap the map to see live arrivals</div>
+      </div>
+
+      <div id="sheetBody" style="display:none;">
+        <!-- Swipeable direction card = the entire "header" -->
+        <div class="route-card-wrap">
+          <div class="route-card-track" id="cardTrack">
+            <div class="route-card dir0" data-dir="0">
+              <div class="pill" id="pill0" style="background:var(--sky-400)">A</div>
+              <div class="meta">
+                <div class="title" id="title0">A Line · To Denver Airport</div>
+                <div class="sub" id="sub0">$10.00 · 7 trains · 37 min trip</div>
+              </div>
+              <div class="swipe-hint">›</div>
+              <div class="close-btn" data-close>✕</div>
+            </div>
+            <div class="route-card dir1" data-dir="1">
+              <div class="pill" id="pill1" style="background:var(--purple-400)">A</div>
+              <div class="meta">
+                <div class="title" id="title1">A Line · To Union Station</div>
+                <div class="sub" id="sub1">$10.00 · 7 trains · 37 min trip</div>
+              </div>
+              <div class="swipe-hint">›</div>
+              <div class="close-btn" data-close>✕</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-dots" id="cardDots">
+          <div class="card-dot active dot0"></div>
+          <div class="card-dot dot1"></div>
+        </div>
+
+        <!-- toolbar: search toggle -->
+        <div class="toolbar">
+          <div class="icon-btn" id="searchToggle">🔍</div>
+        </div>
+        <div class="timeline-search-wrap" id="searchWrap">
+          <input type="text" id="timelineSearch" placeholder="Filter stops on this line…" />
+        </div>
+
+        <!-- timeline = the only content -->
+        <div class="sheet-content">
+          <div class="timeline" id="timeline"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="updated-pill">Updated 12s ago</div>
+
+    <!-- FAB -->
+    <div class="fab-wrap" id="fabWrap">
+      <div class="fab-menu">
+        <div class="fab-item alerts" id="fabAlerts">
+          <div class="icon">⚠️</div>
+          <div class="lbl">Alerts (3)</div>
+        </div>
+        <div class="fab-item" id="fabDirections">
+          <div class="icon">🧭</div>
+          <div class="lbl">Directions</div>
+        </div>
+        <div class="fab-item" id="fabPlan">
+          <div class="icon">🗺️</div>
+          <div class="lbl">Plan a trip</div>
+        </div>
+        <div class="fab-item" id="fabSettings">
+          <div class="icon">⚙️</div>
+          <div class="lbl">Settings</div>
+        </div>
+      </div>
+      <button class="fab-main" id="fabMain">+</button>
+    </div>
+
+    <!-- Full screen overlays -->
+    <div class="overlay" id="overlayDirections">
+      <div class="overlay-header">
+        <div class="back-btn" data-overlay-close>←</div>
+        <h2>🧭 Directions</h2>
+      </div>
+      <div class="overlay-content">
+        <div class="dir-panel">
+          <input type="text" placeholder="From" value="Home" />
+          <input type="text" placeholder="To" value="Denver Airport" />
+          <div class="go-btn" id="goBtn">Get directions</div>
+          <div class="dir-result" id="dirResult" style="display:none;">
+            <div class="leg"><span>Drive to Union Station</span><b>8 min</b></div>
+            <div class="leg"><span>Take A Line to Denver Airport</span><b>37 min</b></div>
+            <div class="leg"><span>Total trip</span><b>~45 min</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="overlayAlerts">
+      <div class="overlay-header">
+        <div class="back-btn" data-overlay-close>←</div>
+        <h2>🔔 Service Alerts</h2>
+      </div>
+      <div class="overlay-content" id="alertsContent"></div>
+    </div>
+
+    <div class="overlay" id="overlayPlan">
+      <div class="overlay-header">
+        <div class="back-btn" data-overlay-close>←</div>
+        <h2>🗺️ Plan a Trip</h2>
+      </div>
+      <div class="overlay-content">
+        <div class="placeholder-panel"><div class="big">🗺️</div>Existing Plan page, unchanged.</div>
+      </div>
+    </div>
+
+    <div class="overlay" id="overlaySettings">
+      <div class="overlay-header">
+        <div class="back-btn" data-overlay-close>←</div>
+        <h2>⚙️ Settings</h2>
+      </div>
+      <div class="overlay-content">
+        <div class="placeholder-panel"><div class="big">⚙️</div>Existing Settings page, unchanged.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <h3>Proto v3 — swipeable card + FAB overlays</h3>
+  <p>One header element instead of three. Schedule timeline is the only content in the sheet — everything else is a full-screen overlay launched from the FAB.</p>
+
+  <h4>The route card (replaces header + direction toggle + tabs)</h4>
+  <ul>
+    <li>One card per direction. <b>Swipe left/right</b> (or click the › arrow) to switch direction — sky for outbound, purple for return, matching the live-vehicle colors.</li>
+    <li>Dots below show which direction is active.</li>
+    <li>✕ closes the route entirely, back to Phase 1 map.</li>
+  </ul>
+
+  <h4>Timeline = the whole sheet</h4>
+  <ul>
+    <li>Tap the 🔍 icon above the timeline to reveal an inline filter — type "Peoria" to highlight/filter stops without leaving the screen.</li>
+    <li>Tap any stop card to expand live detail (vehicle, delay, accessibility) — same as before.</li>
+  </ul>
+
+  <h4>FAB → full-screen overlays</h4>
+  <ul>
+    <li>Alerts/Directions/Plan/Settings now slide up as <b>full screens</b> with their own back arrow — they get the entire screen when used, then return you exactly where you left off.</li>
+    <li>Alerts overlay keeps search + category pills + clickable route badges.</li>
+    <li>Tapping ⚠️3 on the map jumps straight to the Alerts overlay.</li>
+  </ul>
+
+  <h4>Map (Phase 3)</h4>
+  <ul>
+    <li>Selecting a direction in the card re-colors the map's route line/markers (sky ↔ purple) to match — try swiping the card.</li>
+  </ul>
+
+  <h4>Try it</h4>
+  <ul>
+    <li>Search "A Line" → tap the "To Union Station" result directly (skips a step vs v2).</li>
+    <li>Swipe the card left/right, watch map colors + markers swap.</li>
+    <li>Tap 🔍 above timeline, type "Peoria".</li>
+    <li>Tap FAB → Alerts → search "15L", click a route badge.</li>
+    <li>Tap ✕ on the card to return to Phase 1.</li>
+  </ul>
+</div>
+
+<script>
+  const ROUTES = {
+    A: {
+      label: 'A Line', pillBg0: 'var(--sky-400)', pillBg1: 'var(--purple-400)',
+      sub: '$10.00 · 7 trains in service · 37 min trip',
+      directions: ['To Denver Airport', 'To Union Station'],
+      stopsByDir: {
+        0: [
+          { id: 'union', name: 'Union Station', accessible: true, trainHere: true, countdown: '2 min', countdownClass: 'on-time', clock: '1:30 PM', status: 'Train at platform', next: 'then 29, 47 min',
+            transfers: [{ label: 'B', color: '#fbbf24' }, { label: 'G', color: '#34d399' }, { label: '15L', bus: true }, { label: 'AB', bus: true }],
+            detail: { 'Direction': '0 · To Denver Airport', 'Live vehicle': 'Train 1, at platform', 'Delay': 'On time', 'Accessibility': 'Full' } },
+          { id: 'peoria', name: 'Peoria', accessible: false, countdown: '14 min', countdownClass: 'late', clock: '1:42 PM', status: '+3 min late', next: 'then 41 min',
+            transfers: [{ label: 'N', color: '#c084fc' }, { label: '88', bus: true }, { label: '105', bus: true }],
+            detail: { 'Direction': '0 · To Denver Airport', 'Live vehicle': 'Train 2, in transit', 'Delay': '+3 min late', 'Accessibility': 'Limited' } },
+          { id: 'airport', name: 'Denver Airport', accessible: true, countdown: '37 min', countdownClass: '', clock: '2:07 PM', next: 'End of line', transfers: [],
+            detail: { 'Direction': '0 · To Denver Airport', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+        ],
+        1: [
+          { id: 'airport2', name: 'Denver Airport', accessible: true, trainHere: true, countdown: '3 min', countdownClass: 'on-time', clock: '1:33 PM', status: 'Train at platform', next: 'then 31 min',
+            transfers: [], detail: { 'Direction': '1 · To Union Station', 'Live vehicle': 'Train 3, at platform', 'Delay': 'On time', 'Accessibility': 'Full' } },
+          { id: 'peoria2', name: 'Peoria', accessible: false, countdown: '17 min', countdownClass: 'on-time', clock: '1:47 PM', next: 'then 48 min',
+            transfers: [{ label: 'N', color: '#c084fc' }, { label: '88', bus: true }, { label: '105', bus: true }],
+            detail: { 'Direction': '1 · To Union Station', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Limited' } },
+          { id: 'union2', name: 'Union Station', accessible: true, countdown: '35 min', countdownClass: 'early', clock: '2:05 PM', next: 'End of line',
+            transfers: [{ label: 'B', color: '#fbbf24' }, { label: 'G', color: '#34d399' }, { label: '15L', bus: true }, { label: 'AB', bus: true }],
+            detail: { 'Direction': '1 · To Union Station', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+        ],
+      },
+    },
+    '15L': {
+      label: '15L', pillBg0: '#f472b6', pillBg1: '#f472b6',
+      sub: 'Free with rail transfer · 4 buses in service · 22 min trip',
+      directions: ['To Downtown', 'To Federal'],
+      stopsByDir: {
+        0: [
+          { id: 'federal', name: 'Federal & Colfax', accessible: true, countdown: '4 min', countdownClass: 'on-time', clock: '1:32 PM', status: 'In transit', next: 'then 19, 34 min',
+            transfers: [{ label: '16', bus: true }], detail: { 'Direction': '0 · To Downtown', 'Live vehicle': 'Bus 1, in transit', 'Delay': 'On time', 'Accessibility': 'Full' } },
+          { id: 'civic', name: 'Civic Center', accessible: true, countdown: '11 min', countdownClass: 'early', clock: '1:39 PM', next: 'then 26 min',
+            transfers: [{ label: 'D', color: '#38bdf8' }, { label: 'L', color: '#c084fc' }], detail: { 'Direction': '0 · To Downtown', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+          { id: 'union15', name: 'Union Station', accessible: true, countdown: '18 min', countdownClass: 'on-time', clock: '1:46 PM', next: 'End of line',
+            transfers: [{ label: 'A', color: '#38bdf8' }, { label: 'B', color: '#fbbf24' }, { label: 'G', color: '#34d399' }], detail: { 'Direction': '0 · To Downtown', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+        ],
+        1: [
+          { id: 'union15b', name: 'Union Station', accessible: true, countdown: '6 min', countdownClass: 'on-time', clock: '1:34 PM', status: 'In transit', next: 'then 28 min',
+            transfers: [{ label: 'A', color: '#38bdf8' }, { label: 'B', color: '#fbbf24' }, { label: 'G', color: '#34d399' }], detail: { 'Direction': '1 · To Federal', 'Live vehicle': 'Bus 2, in transit', 'Delay': 'On time', 'Accessibility': 'Full' } },
+          { id: 'civic2', name: 'Civic Center', accessible: true, countdown: '13 min', countdownClass: 'on-time', clock: '1:41 PM', next: 'then 35 min',
+            transfers: [{ label: 'D', color: '#38bdf8' }, { label: 'L', color: '#c084fc' }], detail: { 'Direction': '1 · To Federal', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+          { id: 'federal2', name: 'Federal & Colfax', accessible: true, countdown: '20 min', countdownClass: 'early', clock: '1:48 PM', next: 'End of line',
+            transfers: [{ label: '16', bus: true }], detail: { 'Direction': '1 · To Federal', 'Live vehicle': '—', 'Delay': '—', 'Accessibility': 'Full' } },
+        ],
+      },
+    },
+  };
+
+  const ALERTS = [
+    { route: 'A', cat: 'closure', header: 'Route A: Union Station Track 1 closed for maintenance', desc: 'Use Track 2 for all A Line departures through Sunday.' },
+    { route: '15L', cat: 'detour', header: 'Route 15L: Detour around Federal & Colfax', desc: 'Buses skip Federal & Colfax due to road work; use 16th Ave stop.' },
+    { route: 'B', cat: 'schedule', header: 'Route B: Saturday schedule in effect', desc: 'Reduced frequency — trains every 30 min instead of 15.' },
+  ];
+  const CAT_LABELS = { closure: 'Stop Closures', detour: 'Detours', schedule: 'Schedule Changes', other: 'Other' };
+
+  let activeRoute = null;
+  let activeDir = 0;
+  let sheetSnap = 0;
+  let searchOpen = false;
+  let searchQuery = '';
+  let expandedStop = null;
+  let alertCat = 'all';
+  let alertQuery = '';
+
+  const sheet = document.getElementById('sheet');
+  const emptyState = document.getElementById('emptyState');
+  const sheetBody = document.getElementById('sheetBody');
+  const cardTrack = document.getElementById('cardTrack');
+  const cardDots = document.getElementById('cardDots');
+  const timeline = document.getElementById('timeline');
+  const mapArea = document.getElementById('mapArea');
+  const mapSearch = document.getElementById('mapSearch');
+  const quickResults = document.getElementById('quickResults');
+  const fabWrap = document.getElementById('fabWrap');
+  const searchWrap = document.getElementById('searchWrap');
+  const timelineSearch = document.getElementById('timelineSearch');
+
+  function applySnap() {
+    sheet.classList.remove('snap-mid', 'snap-full');
+    if (sheetSnap === 1) sheet.classList.add('snap-mid');
+    if (sheetSnap === 2) sheet.classList.add('snap-full');
+    mapArea.parentElement.classList.toggle('sheet-up', sheetSnap > 0);
+  }
+
+  function selectRoute(routeKey, dir, stopId) {
+    activeRoute = routeKey;
+    activeDir = dir || 0;
+    expandedStop = stopId || null;
+    sheetSnap = stopId ? 2 : 1;
+    searchOpen = false;
+    quickResults.classList.remove('open');
+    mapSearch.value = '';
+    emptyState.style.display = 'none';
+    sheetBody.style.display = 'block';
+    mapArea.classList.add('selected');
+    renderAll();
+    if (stopId) setTimeout(() => {
+      const el = document.getElementById('row-' + stopId);
+      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 400);
+  }
+
+  function closeRoute() {
+    activeRoute = null;
+    sheetSnap = 0;
+    emptyState.style.display = 'block';
+    sheetBody.style.display = 'none';
+    mapArea.classList.remove('selected', 'dir1-active');
+    applySnap();
+  }
+
+  function renderCard() {
+    const r = ROUTES[activeRoute];
+    document.getElementById('pill0').textContent = activeRoute.length <= 2 ? activeRoute : activeRoute[0];
+    document.getElementById('pill1').textContent = activeRoute.length <= 2 ? activeRoute : activeRoute[0];
+    document.getElementById('pill0').style.background = r.pillBg0;
+    document.getElementById('pill1').style.background = r.pillBg1;
+    document.getElementById('title0').textContent = `${r.label} · ${r.directions[0]}`;
+    document.getElementById('title1').textContent = `${r.label} · ${r.directions[1]}`;
+    document.getElementById('sub0').textContent = r.sub;
+    document.getElementById('sub1').textContent = r.sub;
+    cardTrack.style.transform = `translateX(-${activeDir * 100}%)`;
+    cardDots.querySelectorAll('.card-dot').forEach((d, i) => d.classList.toggle('active', i === activeDir));
+  }
+
+  function renderTimeline() {
+    const r = ROUTES[activeRoute];
+    const stops = r.stopsByDir[activeDir];
+    const q = searchQuery.trim().toLowerCase();
+    timeline.parentElement.parentElement.classList.toggle('dir1-active', activeDir === 1);
+
+    timeline.innerHTML = stops.map((s) => {
+      const matchesName = s.name.toLowerCase().includes(q);
+      const matchesTransfer = (s.transfers || []).some((t) => t.label.toLowerCase().includes(q));
+      const matches = !q || matchesName || matchesTransfer;
+      const transfersHtml = (s.transfers || []).map((t) =>
+        t.bus ? `<div class="badge-pill bus">${t.label}</div>` : `<div class="badge-pill" style="background:${t.color}">${t.label}</div>`
+      ).join('');
+      const statusHtml = s.status ? `<span class="live-dot" style="${s.countdownClass === 'late' ? 'background:var(--amber-400); box-shadow:0 0 0 3px rgba(251,191,36,.2)' : ''}"></span> ${s.status}` : '';
+      const detailRows = Object.entries(s.detail || {}).map(([k, v]) => `<div class="row"><span>${k}</span><b>${v}</b></div>`).join('');
+      return `
+        <div class="stop-row ${s.trainHere ? 'train-here' : ''} ${q && !matches ? 'hidden' : ''}" id="row-${s.id}">
+          <div class="stop-card ${expandedStop === s.id ? 'expanded' : ''} ${q && matches ? 'search-match' : ''}" data-stop="${s.id}">
+            <div class="stop-top">
+              <div class="stop-name">${s.name}${s.accessible ? ' <span class="accessible">♿</span>' : ''}</div>
+              <div class="stop-time">
+                <div class="countdown ${s.countdownClass || ''}">${s.countdown || '—'}</div>
+                ${s.clock ? `<div class="clock">${s.clock}</div>` : ''}
+              </div>
+            </div>
+            <div class="stop-sub">${statusHtml}${s.next ? `<span class="next-trains">${statusHtml ? '· ' : ''}${s.next}</span>` : ''}</div>
+            ${transfersHtml ? `<div class="transfers">${transfersHtml}</div>` : ''}
+            <div class="expand-detail">${detailRows}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    timeline.querySelectorAll('.stop-card').forEach((card) => {
+      card.onclick = () => {
+        const id = card.dataset.stop;
+        expandedStop = expandedStop === id ? null : id;
+        renderTimeline();
+      };
+    });
+  }
+
+  function renderMap() {
+    if (!activeRoute) return;
+    mapArea.classList.toggle('dir1-active', activeDir === 1);
+    document.getElementById('routeLine1').style.opacity = activeDir === 1 ? '.9' : '.25';
+    const veh0 = document.getElementById('veh0');
+    const veh1 = document.getElementById('veh1');
+    veh0.classList.toggle('dir1', activeDir === 1);
+    veh1.classList.toggle('dir1', activeDir === 1);
+    if (activeDir === 1) {
+      veh0.style.left = '60%'; veh0.style.top = '50%';
+      veh1.style.left = '30%'; veh1.style.top = '24%';
+    } else {
+      veh0.style.left = '35%'; veh0.style.top = '27%';
+      veh1.style.left = '66%'; veh1.style.top = '55%';
+    }
+  }
+
+  function renderAll() {
+    applySnap();
+    if (!activeRoute) return;
+    renderCard();
+    renderTimeline();
+    renderMap();
+  }
+
+  // Search (map / quick results)
+  mapSearch.addEventListener('input', () => quickResults.classList.toggle('open', mapSearch.value.trim().length > 0));
+  mapSearch.addEventListener('focus', () => { if (mapSearch.value.trim().length > 0) quickResults.classList.add('open'); });
+  quickResults.querySelectorAll('.quick-result').forEach((el) => {
+    el.addEventListener('click', () => selectRoute(el.dataset.route, Number(el.dataset.dir), el.dataset.stop || null));
+  });
+
+  // Map stops
+  document.getElementById('stopUnion').addEventListener('click', () => selectRoute('A', activeDir, activeDir === 1 ? 'union2' : 'union'));
+  document.getElementById('stopPeoria').addEventListener('click', () => selectRoute('A', activeDir, activeDir === 1 ? 'peoria2' : 'peoria'));
+  document.getElementById('stopAirport').addEventListener('click', () => selectRoute('A', activeDir, activeDir === 1 ? 'airport2' : 'airport'));
+
+  // Sheet handle: cycle snaps
+  document.getElementById('sheetHandle').addEventListener('click', () => {
+    if (!activeRoute) return;
+    sheetSnap = sheetSnap === 2 ? 1 : sheetSnap + 1;
+    applySnap();
+  });
+
+  // Card swipe (click arrow / drag)
+  cardTrack.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close]')) { closeRoute(); return; }
+    if (e.target.closest('.swipe-hint')) {
+      activeDir = activeDir === 0 ? 1 : 0;
+      expandedStop = null;
+      renderCard(); renderTimeline(); renderMap();
+    }
+  });
+  let dragStartX = null;
+  cardTrack.addEventListener('pointerdown', (e) => { dragStartX = e.clientX; });
+  cardTrack.addEventListener('pointerup', (e) => {
+    if (dragStartX == null) return;
+    const dx = e.clientX - dragStartX;
+    if (Math.abs(dx) > 40) {
+      if (dx < 0 && activeDir === 0) activeDir = 1;
+      else if (dx > 0 && activeDir === 1) activeDir = 0;
+      expandedStop = null;
+      renderCard(); renderTimeline(); renderMap();
+    }
+    dragStartX = null;
+  });
+
+  // Inline timeline search toggle
+  document.getElementById('searchToggle').addEventListener('click', (e) => {
+    searchOpen = !searchOpen;
+    searchWrap.classList.toggle('open', searchOpen);
+    e.currentTarget.classList.toggle('active', searchOpen);
+    if (searchOpen) timelineSearch.focus();
+    else { searchQuery = ''; timelineSearch.value = ''; renderTimeline(); }
+  });
+  timelineSearch.addEventListener('input', (e) => { searchQuery = e.target.value; renderTimeline(); });
+
+  // Alerts overlay render
+  function renderAlerts() {
+    const cats = ['all', 'closure', 'detour', 'schedule', 'other'];
+    const filtered = ALERTS.filter((a) => {
+      if (alertCat !== 'all' && a.cat !== alertCat) return false;
+      if (alertQuery && !a.header.toLowerCase().includes(alertQuery.toLowerCase()) && !a.desc.toLowerCase().includes(alertQuery.toLowerCase())) return false;
+      return true;
+    });
+    document.getElementById('alertsContent').innerHTML = `
+      <input type="text" class="alert-search" id="alertSearch" placeholder="Search ${ALERTS.length} alerts (route, station)…" value="${alertQuery}" />
+      <div class="cat-pills">
+        ${cats.map((c) => {
+          const count = c === 'all' ? ALERTS.length : ALERTS.filter((a) => a.cat === c).length;
+          return `<div class="cat-pill ${alertCat === c ? 'active' : ''}" data-cat="${c}">${c === 'all' ? 'All' : CAT_LABELS[c]} (${count})</div>`;
+        }).join('')}
+      </div>
+      ${filtered.map((a) => `
+        <div class="alert-card">
+          <div class="route-tag" data-route="${a.route}">Route ${a.route}</div>
+          <div class="head">${a.header}</div>
+          <div class="desc">${a.desc}</div>
+        </div>
+      `).join('') || '<p style="color:var(--slate-500); font-size:12.5px;">No alerts match your search.</p>'}
+    `;
+    document.getElementById('alertSearch').oninput = (e) => { alertQuery = e.target.value; renderAlerts(); };
+    document.querySelectorAll('#alertsContent .cat-pill').forEach((p) => { p.onclick = () => { alertCat = p.dataset.cat; renderAlerts(); }; });
+    document.querySelectorAll('#alertsContent .route-tag').forEach((tag) => { tag.onclick = () => { alertQuery = tag.dataset.route; renderAlerts(); }; });
+  }
+
+  // Overlay open/close
+  function openOverlay(id) { document.getElementById(id).classList.add('open'); fabWrap.classList.remove('open'); }
+  function closeOverlays() { document.querySelectorAll('.overlay').forEach((o) => o.classList.remove('open')); }
+  document.querySelectorAll('[data-overlay-close]').forEach((b) => b.addEventListener('click', () => b.closest('.overlay').classList.remove('open')));
+
+  document.getElementById('fabMain').addEventListener('click', () => fabWrap.classList.toggle('open'));
+  document.getElementById('fabAlerts').addEventListener('click', () => { renderAlerts(); openOverlay('overlayAlerts'); });
+  document.getElementById('fabDirections').addEventListener('click', () => openOverlay('overlayDirections'));
+  document.getElementById('fabPlan').addEventListener('click', () => openOverlay('overlayPlan'));
+  document.getElementById('fabSettings').addEventListener('click', () => openOverlay('overlaySettings'));
+  document.getElementById('alertBadge').addEventListener('click', () => { renderAlerts(); openOverlay('overlayAlerts'); });
+  document.getElementById('goBtn').addEventListener('click', () => { document.getElementById('dirResult').style.display = 'block'; });
+
+  applySnap();
+</script>
+
+</body>
+</html>

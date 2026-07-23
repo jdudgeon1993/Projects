@@ -1,0 +1,13 @@
+providers = ["node"]
+
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["cd server && npm install", "cd web && npm install"]
+
+[phases.build]
+cmds = ["cd web && npm run build"]
+
+[start]
+cmd = "node server/index.js"

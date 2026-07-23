@@ -35,7 +35,7 @@ Real-time transit tracking application for RTD (Regional Transportation District
 
 ### Prerequisites
 - Supabase project with RTD tables
-- GitHub repository secrets: `SUPABASE_URL`, `SUPABASE_KEY`
+- GitHub repository secret: `SUPABASE_DB_URL` (direct Postgres connection string)
 - Python 3.10+ for local testing
 
 ### 1. Create Supabase Tables
@@ -54,9 +54,11 @@ This creates the `rtd_feed_info` table for tracking GTFS versions.
 
 In your GitHub repo:
 1. Go to **Settings → Secrets and variables → Actions**
-2. Add two secrets:
-   - `SUPABASE_URL`: Your Supabase project URL
-   - `SUPABASE_KEY`: Your Supabase **service role key** (for write access)
+2. Add one secret:
+   - `SUPABASE_DB_URL`: Your Supabase direct Postgres connection string
+     (Project Settings → Database → Connection string → URI — use the
+     direct or session-pooler URL, not the transaction-mode pooler on
+     port 6543)
 
 ### 3. Trigger Initial Import
 
@@ -115,11 +117,10 @@ To run the import script locally:
 
 ```bash
 # Install dependencies
-pip install requests supabase
+pip install -r requirements.txt
 
 # Set environment variables
-export SUPABASE_URL="https://your-project.supabase.co"
-export SUPABASE_KEY="your-service-role-key"
+export SUPABASE_DB_URL="postgresql://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres"
 
 # Run import
 python scripts/rtd_import.py
@@ -172,7 +173,7 @@ python scripts/rtd_import.py
 ### GitHub Action Failing
 
 1. **Check secrets are set**:
-   - Settings → Secrets → SUPABASE_URL and SUPABASE_KEY exist
+   - Settings → Secrets → SUPABASE_DB_URL exists
 
 2. **Check Supabase tables exist**:
    - Verify `rtd_feed_info` table created
@@ -185,7 +186,7 @@ python scripts/rtd_import.py
 ### Import Script Errors
 
 Common issues:
-- **"Missing required environment variables"**: Set SUPABASE_URL and SUPABASE_KEY
+- **"Missing required environment variable"**: Set SUPABASE_DB_URL
 - **"Table does not exist"**: Run SQL scripts to create tables
 - **"Failed to insert"**: Check column names match GTFS spec
 
@@ -195,7 +196,7 @@ Common issues:
 - **GTFS-RT Feeds**:
   - TripUpdates: https://www.rtd-denver.com/files/gtfs-rt/TripUpdate.pb
   - VehiclePositions: https://www.rtd-denver.com/files/gtfs-rt/VehiclePosition.pb
-  - Alerts: https://www.rtd-denver.com/files/gtfs-rt/Alert.pb
+  - Alerts: https://www.rtd-denver.com/files/gtfs-rt/Alerts.pb
 
 ## License
 
