@@ -15,6 +15,7 @@ import { loadSavedTrips, persistSavedTrips, type SavedTrip } from '../lib/savedT
 import type { ParsedFeed } from '../lib/gtfsrt';
 
 const ChainMap = lazy(() => import('./ChainMap'));
+const ExpressLaneTolls = lazy(() => import('./ExpressLaneTolls'));
 
 const TRANSFER_ESTIMATE_MINUTES = 5;
 
@@ -699,6 +700,18 @@ export default function TripPlanner({ tripUpdates }: { tripUpdates: ParsedFeed |
         Times from RTD's schedule for today's service. Live delay shown when a matching vehicle is reporting.
         Transfers connect stops within {' '} a 400m walk.
       </p>
+
+      {/* Driving alternative: I-25 Central Express Lane toll estimator */}
+      <details className="rounded-lg border border-slate-800 bg-slate-950">
+        <summary className="cursor-pointer px-3 py-2 text-sm text-slate-400 hover:text-slate-300">
+          🛣️ Driving instead? I-25 Central Express Lane tolls (Downtown ↔ US-36)
+        </summary>
+        <div className="p-3 pt-0">
+          <Suspense fallback={<p className="text-xs text-slate-500">Loading toll schedule…</p>}>
+            <ExpressLaneTolls />
+          </Suspense>
+        </div>
+      </details>
     </div>
   );
 }
