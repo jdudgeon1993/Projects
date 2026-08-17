@@ -2,11 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   DIRECTION_LABELS,
   TOLL_SCHEDULE_EFFECTIVE,
+  clockInputToMinutes,
+  getBandsInWindow,
   getCurrentBand,
   getScheduleFor,
+  minutesToClock,
   type TollBand,
   type TollDirection,
 } from '../lib/tolls';
+
+/** Date → "HH:MM" for an <input type="time"> default value. */
+function dateToTimeInputValue(date: Date): string {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
 
 function formatPrice(price: number | null): string {
   return price == null ? '—' : `$${price.toFixed(2)}`;
@@ -39,6 +47,20 @@ export default function ExpressLaneTolls() {
   const nextCheaper = useMemo(() => findNextCheaperBand(schedule, currentIndex), [schedule, currentIndex]);
   const isClosed = currentBand.expressToll == null;
   const meta = DIRECTION_LABELS[direction];
+
+  // "I might arrive anywhere between X and Y" window checker — for exactly
+  // the "I'll leave work around 5:30, might hit the entrance before or after
+  // 5:45" situation, where a single "right now" price doesn't help.
+  const [windowStart, setWindowStart] = useState(() => dateToTimeInputValue(now));
+  const [windowEnd, setWindowEnd] = useState(() => dateToTimeInputValue(new Date(now.getTime() + 20 * 60_000)));
+  const windowStartMinutes = clockInputToMinutes(windowStart);
+  const windowEndMinutes = clockInputToMinutes(windowEnd);
+  const windowSegments = useMemo(() => {
+    if (windowStartMinutes == null || windowEndMinutes == null || windowEndMinutes <= windowStartMinutes) return [];
+    return getBandsInWindow(direction, now, windowStartMinutes, windowEndMinutes);
+  }, [direction, now, windowStartMinutes, windowEndMinutes]);
+  const windowPrices = windowSegments.map((s) => s.band.expressToll).filter((p): p is number => p != null);
+  const windowSavings = windowPrices.length > 1 ? Math.max(...windowPrices) - Math.min(...windowPrices) : 0;
 
   return (
     <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
@@ -117,6 +139,69 @@ export default function ExpressLaneTolls() {
         />
         Show LicensePlateToll (no-transponder) rates
       </label>
+
+      {/* Arrival window checker — for "I'll leave around X, might hit the entrance before or after Y" */}
+      <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+        <p className="mb-2 text-xs font-medium text-slate-300">Not sure exactly when you'll arrive?</p>
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <span>Between</span>
+          <input
+            type="time"
+            value={windowStart}
+            onChange={(e) => setWindowStart(e.target.value)}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200"
+          />
+          <span>and</span>
+          <input
+            type="time"
+            value={windowEnd}
+            onChange={(e) => setWindowEnd(e.target.value)}
+            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setWindowStart(dateToTimeInputValue(now));
+              setWindowEnd(dateToTimeInputValue(new Date(now.getTime() + 20 * 60_000)));
+            }}
+            className="ml-auto rounded border border-slate-700 px-2 py-1 text-slate-400 hover:border-sky-500 hover:text-sky-300"
+          >
+            Now + 20 min
+          </button>
+        </div>
+
+        {windowStartMinutes != null && windowEndMinutes != null && windowEndMinutes <= windowStartMinutes && (
+          <p className="mt-2 text-xs text-amber-400">End time must be after the start time.</p>
+        )}
+
+        {windowSegments.length > 0 && (
+          <div className="mt-3 space-y-1">
+            {windowSegments.map((seg, i) => {
+              const closed = seg.band.expressToll == null;
+              const isCheapestInWindow = !closed && seg.band.expressToll === Math.min(...windowPrices);
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center justify-between rounded px-2 py-1.5 text-xs ${
+                    closed ? 'bg-slate-900 text-slate-600' : isCheapestInWindow && windowSavings > 0 ? 'bg-emerald-950/40 text-emerald-300' : 'bg-slate-900 text-slate-300'
+                  }`}
+                >
+                  <span>
+                    {minutesToClock(seg.from)} – {minutesToClock(seg.to)}
+                  </span>
+                  <span className="font-semibold">{closed ? 'Closed' : formatPrice(seg.band.expressToll)}</span>
+                </div>
+              );
+            })}
+            {windowSavings > 0 && (
+              <p className="pt-1 text-xs text-emerald-400">
+                Timing it right could save you {formatPrice(windowSavings)} — the cutoff is at{' '}
+                {minutesToClock(windowSegments.find((s, i) => i > 0 && s.band.expressToll !== windowSegments[i - 1].band.expressToll)?.from ?? windowSegments[0].from)}.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Full day schedule */}
       <div>
