@@ -94,3 +94,33 @@ export function minutesToClock(minutes: number): string {
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   return `${h12}:${String(m).padStart(2, '0')} ${period}`;
 }
+
+/** "HH:MM" (24h, from an <input type="time">) → minutes from midnight. */
+export function clockInputToMinutes(value: string): number | null {
+  const [h, m] = value.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+export interface WindowSegment {
+  band: TollBand;
+  /** Minutes from midnight, clipped to the requested window. */
+  from: number;
+  to: number;
+}
+
+/**
+ * "I might arrive anywhere between X and Y" — returns every band the window
+ * overlaps, each clipped to the requested [startMinutes, endMinutes) range,
+ * in chronological order. Does not handle windows that cross midnight.
+ */
+export function getBandsInWindow(direction: TollDirection, date: Date, startMinutes: number, endMinutes: number): WindowSegment[] {
+  const schedule = getScheduleFor(direction, date);
+  const segments: WindowSegment[] = [];
+  for (const band of schedule) {
+    const from = Math.max(band.startMinutes, startMinutes);
+    const to = Math.min(band.endMinutes, endMinutes);
+    if (from < to) segments.push({ band, from, to });
+  }
+  return segments;
+}
